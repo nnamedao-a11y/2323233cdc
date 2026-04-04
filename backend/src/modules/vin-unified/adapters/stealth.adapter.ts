@@ -155,9 +155,42 @@ export class StealthAdapter implements OnModuleDestroy {
       await this.simulateHumanBehavior(page);
 
       // Wait for dynamic content to render
-      await this.delay(3000 + Math.random() * 2000);
+      await this.delay(2000 + Math.random() * 1500);
 
-      // Extract data
+      // 🔥 CRITICAL FIX: Navigate to LOT PAGE before extraction
+      // Search pages only show previews, we need full lot data
+      const lotPageUrl = await this.findLotPageUrl(page, vin, source);
+      
+      if (lotPageUrl) {
+        this.logger.log(`[Stealth] Found lot page: ${lotPageUrl}`);
+        
+        // Navigate to lot page
+        const lotResponse = await page.goto(lotPageUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
+        }).catch(() => null);
+        
+        if (lotResponse && lotResponse.status() < 400) {
+          // Wait for lot page to load
+          await page.waitForSelector('body', { timeout: 10000 }).catch(() => {});
+          await this.delay(2000 + Math.random() * 1500);
+          
+          // Verify we're on lot page
+          const currentUrl = page.url();
+          const isLotPage = currentUrl.includes('/lot/') || 
+                           currentUrl.includes('/vehicle/') ||
+                           currentUrl.includes('/item/') ||
+                           currentUrl.includes('/VehicleDetail');
+          
+          if (isLotPage) {
+            this.logger.log(`[Stealth] Successfully navigated to lot page for ${source.name}`);
+          }
+        }
+      } else {
+        this.logger.debug(`[Stealth] No lot page link found for ${source.name}, using search results`);
+      }
+
+      // Extract FULL data from current page (lot page or search page)
       const data = await this.extractVehicleData(page, vin, source);
       
       await page.close();
@@ -381,6 +414,98 @@ export class StealthAdapter implements OnModuleDestroy {
   }
 
   /**
+   * Find lot page URL from search results
+   * CRITICAL: This is needed to get full auction data
+   */
+  private async findLotPageUrl(
+    page: Page,
+    vin: string,
+    source: DiscoveredSource,
+  ): Promise<string | null> {
+    try {
+      // Domain-specific selectors for lot links
+      const lotLinkSelectors: Record<string, string[]> = {
+        'copart.com': [
+          'a[href*="/lot/"]',
+          'a[href*="/lotSearchResults/"]',
+          '.lot-number a',
+          '[data-uname="lotsearchLotHyperlink"]',
+        ],
+        'iaai.com': [
+          'a[href*="/VehicleDetail/"]',
+          'a[href*="/vehicle/"]',
+          '.vehicle-details a',
+          '.stock-number a',
+        ],
+        'autobidmaster.com': [
+          'a[href*="/en/carfinder/lot/"]',
+          'a[href*="/lot/"]',
+          '.lot-link',
+        ],
+        'salvagereseller.com': [
+          'a[href*="/lot/"]',
+          'a[href*="/vehicle/"]',
+        ],
+        'bidfax.info': [
+          'a[href*="/lot/"]',
+          'a[href*="/copart/"]',
+          'a[href*="/iaai/"]',
+        ],
+        'poctra.com': [
+          'a[href*="/lot/"]',
+          'a[href*="/vehicle/"]',
+        ],
+        'stat.vin': [
+          'a[href*="/cars/"]',
+          'a[href*="/lot/"]',
+        ],
+      };
+
+      // Generic selectors for any site
+      const genericSelectors = [
+        'a[href*="/lot/"]',
+        'a[href*="/vehicle/"]',
+        'a[href*="/item/"]',
+        'a[href*="/VehicleDetail"]',
+      ];
+
+      const selectors = lotLinkSelectors[source.domain] || genericSelectors;
+
+      // Try to find lot link
+      for (const selector of selectors) {
+        try {
+          const lotLink = await page.$eval(selector, (el) => {
+            const anchor = el as HTMLAnchorElement;
+            return anchor.href || null;
+          }).catch(() => null);
+
+          if (lotLink && lotLink.startsWith('http')) {
+            return lotLink;
+          }
+        } catch {}
+      }
+
+      // Fallback: Find any link containing our VIN
+      const vinLink = await page.evaluate((targetVin: string) => {
+        const links = Array.from(document.querySelectorAll('a[href]'));
+        for (const link of links) {
+          const href = (link as HTMLAnchorElement).href;
+          if (href.includes(targetVin) || href.includes('/lot/') || href.includes('/vehicle/')) {
+            return href;
+          }
+        }
+        return null;
+      }, vin);
+
+      return vinLink;
+
+    } catch (error) {
+      this.logger.debug(`[Stealth] Error finding lot URL: ${error}`);
+      return null;
+    }
+  }
+
+  /**
    * Extract vehicle data from page - aggressive parsing
    */
   private async extractVehicleData(
@@ -458,6 +583,7 @@ export class StealthAdapter implements OnModuleDestroy {
       const lotPatterns = [
         /Lot\s*#?\s*(\d{7,9})/i,
         /Lot\s*(?:Number|ID)?[:\s]*(\d+)/i,
+        /Stock\s*#?\s*(\d+)/i,  // IAAI uses Stock
         /(\d{7,9})\s*Watch/i, // Copart specific
       ];
       for (const pattern of lotPatterns) {
@@ -468,11 +594,28 @@ export class StealthAdapter implements OnModuleDestroy {
         }
       }
 
+      // 🔥 LABEL-BASED EXTRACTION (for lot page data)
+      const find = (label: string): string | null => {
+        const patterns = [
+          new RegExp(label + '\\s*:\\s*([^\\n]+)', 'i'),
+          new RegExp(label + '\\s+([^\\n]+)', 'i'),
+        ];
+        for (const pattern of patterns) {
+          const match = bodyText.match(pattern);
+          if (match) {
+            return match[1].trim().split('\n')[0].trim();
+          }
+        }
+        return null;
+      };
+
       // Price - multiple patterns
       let price: number | null = null;
       const pricePatterns = [
         /retail\s*value[:\s]*\$?([\d,]+)/i,
         /current\s*bid[:\s]*\$?([\d,]+)/i,
+        /high\s*bid[:\s]*\$?([\d,]+)/i,
+        /buy\s*(?:it\s*)?now[:\s]*\$?([\d,]+)/i,
         /price[:\s]*\$?([\d,]+)/i,
         /bid[:\s]*\$?([\d,]+)/i,
         /\$([\d,]+)/,
@@ -488,10 +631,11 @@ export class StealthAdapter implements OnModuleDestroy {
         }
       }
 
-      // Mileage/Odometer
+      // Mileage/Odometer - ENHANCED
       let mileage: number | null = null;
+      let odometerUnit: string | null = null;
       const mileagePatterns = [
-        /Odometer[:\s]*(\d{1,3},?\d{3})/i,
+        /Odometer[:\s]*(\d{1,3},?\d{3})\s*(mi|km|miles?)?/i,
         /(\d{1,3},?\d{3})\s*(?:miles?|mi)\b/i,
         /mileage[:\s]*(\d{1,3},?\d{3})/i,
       ];
@@ -499,23 +643,57 @@ export class StealthAdapter implements OnModuleDestroy {
         const match = bodyText.match(pattern);
         if (match) {
           mileage = parseInt(match[1].replace(/,/g, ''), 10);
+          odometerUnit = match[2]?.toLowerCase().startsWith('k') ? 'km' : 'mi';
           break;
         }
       }
 
-      // Damage type
+      // Damage type - ENHANCED with label extraction
       let damage: string | null = null;
-      const damagePatterns = [
-        /(?:primary\s*)?damage[:\s]*([A-Za-z\s]+?)(?:\n|,|Odometer|Sale)/i,
-        /(Front End|Rear End|Side|Roll Over|Flood|Fire|Mechanical|Hail|Vandalism|All Over|Minor Dent)/i,
-      ];
-      for (const pattern of damagePatterns) {
-        const match = bodyText.match(pattern);
-        if (match) {
-          damage = match[1].trim();
-          break;
+      let secondaryDamage: string | null = null;
+      
+      damage = find('Primary Damage') || find('Damage Type') || find('Damage');
+      secondaryDamage = find('Secondary Damage');
+      
+      if (!damage) {
+        const damagePatterns = [
+          /(Front End|Rear End|Side|Roll Over|Flood|Fire|Mechanical|Hail|Vandalism|All Over|Minor Dent|Burn)/i,
+        ];
+        for (const pattern of damagePatterns) {
+          const match = bodyText.match(pattern);
+          if (match) {
+            damage = match[1].trim();
+            break;
+          }
         }
       }
+
+      // Title Status - NEW
+      const titleStatus = find('Title') || find('Title Code') || find('Title Status');
+      
+      // Fuel Type - NEW
+      const fuel = find('Fuel') || find('Fuel Type');
+      
+      // Transmission - NEW  
+      const transmission = find('Transmission');
+      
+      // Drive - NEW
+      const drive = find('Drive') || find('Drive Type');
+      
+      // Body Style - NEW
+      const bodyStyle = find('Body Style') || find('Body Type');
+      
+      // Seller - NEW
+      const seller = find('Seller');
+      
+      // Sale Date - NEW
+      const saleDate = find('Sale Date') || find('Auction Date');
+
+      // Engine - NEW
+      const engine = find('Engine') || find('Engine Type');
+      
+      // Color - NEW
+      const color = find('Color') || find('Exterior Color');
 
       // Images
       const images: string[] = [];
@@ -546,14 +724,26 @@ export class StealthAdapter implements OnModuleDestroy {
         foundVin: foundVin?.toUpperCase() || null,
         title,
         price,
-        images: images.slice(0, 15),
+        images: images.slice(0, 20),
         lotNumber,
         year,
         make,
         model,
         mileage,
+        odometerUnit,
         damage,
+        secondaryDamage,
         location,
+        // NEW FIELDS from lot page
+        titleStatus,
+        fuel,
+        transmission,
+        drive,
+        bodyStyle,
+        seller,
+        saleDate,
+        engine,
+        color,
       };
     }, vin);
 
@@ -582,7 +772,7 @@ export class StealthAdapter implements OnModuleDestroy {
     if (data.lotNumber) confidence += 0.1;
 
     this.logger.log(
-      `[Stealth] ${source.name}: vin=${!!data.foundVin}, vinMatched=${vinMatched}, year=${data.year}, make=${data.make}, lot=${data.lotNumber}, price=${data.price}, conf=${confidence.toFixed(2)}`
+      `[Stealth] ${source.name}: vin=${!!data.foundVin}, vinMatched=${vinMatched}, lot=${data.lotNumber}, price=${data.price}, odometer=${data.mileage}, damage=${data.damage}, conf=${confidence.toFixed(2)}`
     );
 
     // Skip if no useful data found OR VIN doesn't match (P0)
@@ -609,7 +799,19 @@ export class StealthAdapter implements OnModuleDestroy {
       price: data.price || undefined,
       images: data.images,
       damageType: data.damage || undefined,
+      secondaryDamage: data.secondaryDamage || undefined,
       mileage: data.mileage || undefined,
+      odometerUnit: data.odometerUnit || 'mi',
+      // NEW FIELDS from lot page extraction
+      titleStatus: data.titleStatus || undefined,
+      fuel: data.fuel || undefined,
+      transmission: data.transmission || undefined,
+      drive: data.drive || undefined,
+      bodyStyle: data.bodyStyle || undefined,
+      seller: data.seller || undefined,
+      saleDate: data.saleDate ? new Date(data.saleDate) : undefined,
+      engine: data.engine || undefined,
+      color: data.color || undefined,
       source: source.name,
       sourceUrl: source.url,
       sourceTier: source.tier,

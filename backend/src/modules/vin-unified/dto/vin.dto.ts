@@ -235,9 +235,18 @@ export interface ExtractedVehicle {
   primaryDamage?: string;
   secondaryDamage?: string;
   mileage?: number;
+  odometerUnit?: string;
   odometerStatus?: string;
   titleStatus?: string;
   keys?: string;
+  // NEW FIELDS for full lot data
+  fuel?: string;
+  transmission?: string;
+  drive?: string;
+  bodyStyle?: string;
+  seller?: string;
+  engine?: string;
+  color?: string;
   source: string;
   sourceUrl: string;
   sourceTier: SourceTier;
