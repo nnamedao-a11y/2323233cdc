@@ -90,26 +90,46 @@ const VinCheckPage = () => {
       
       // Transform V2 response to expected format
       const data = res.data;
+      const auction = data.auction || {};
+      const vehicle = data.vehicle || {};
+      
       const transformed = {
         vin: data.vin,
         status: data.status,
         confidence: data.confidence,
-        title: data.vehicle?.title,
-        year: data.vehicle?.year,
-        make: data.vehicle?.make,
-        model: data.vehicle?.model,
-        price: data.vehicle?.price || data.pricing?.marketPrice,
-        images: data.vehicle?.images || [],
-        location: data.vehicle?.location,
-        saleDate: data.vehicle?.saleDate,
-        lotNumber: data.vehicle?.lotNumber,
-        damageType: data.vehicle?.damageType,
-        mileage: data.vehicle?.mileage,
+        // Vehicle info from LocalDecoder
+        title: vehicle.title || `${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''}`.trim(),
+        year: vehicle.year,
+        make: vehicle.make,
+        model: vehicle.model,
+        // Auction data from scrapers
+        price: auction.currentBid || auction.price || vehicle.price || data.pricing?.marketPrice,
+        images: auction.images || vehicle.images || [],
+        location: auction.location || vehicle.location,
+        saleDate: auction.saleDate || vehicle.saleDate,
+        lotNumber: auction.lotNumber || vehicle.lotNumber,
+        damageType: auction.damageType || vehicle.damageType,
+        secondaryDamage: auction.secondaryDamage,
+        mileage: auction.odometer || vehicle.mileage,
+        odometerUnit: auction.odometerUnit || 'mi',
+        // Extra auction data
+        auctionSource: auction.source,
+        auctionFound: auction.found,
+        titleStatus: auction.titleStatus,
+        fuel: auction.fuel,
+        transmission: auction.transmission,
+        drive: auction.drive,
+        bodyStyle: auction.bodyStyle,
+        seller: auction.seller,
+        color: auction.color,
+        engine: auction.engine,
         // Pricing from V2
         pricing: data.pricing,
         sourcesUsed: data.sourcesUsed,
         sourceCount: data.sourceCount,
         message: data.message,
+        // Sources array - transform to string array for display
+        sources: (data.sources || []).map(s => typeof s === 'string' ? s : s.name).filter(Boolean),
       };
       
       setResult(transformed);
@@ -311,34 +331,106 @@ const VinCheckPage = () => {
 
                 {/* Vehicle Info */}
                 <div className="bg-white rounded-xl border border-zinc-200 p-6">
-                  <h2 className="text-2xl font-bold text-zinc-900 mb-2">
-                    {result.title || `${result.year || ''} ${result.make || ''} ${result.model || ''}`.trim() || 'Автомобіль'}
-                  </h2>
-                  
-                  <p className="text-sm text-zinc-400 font-mono mb-6">
-                    VIN: {result.vin}
-                  </p>
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <h2 className="text-2xl font-bold text-zinc-900 mb-2">
+                        {result.title || `${result.year || ''} ${result.make || ''} ${result.model || ''}`.trim() || 'Автомобіль'}
+                      </h2>
+                      <p className="text-sm text-zinc-400 font-mono">
+                        VIN: {result.vin}
+                      </p>
+                    </div>
+                    {/* Auction Source Badge */}
+                    {result.auctionFound && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-green-100 rounded-full">
+                        <CheckCircle size={16} className="text-green-600" />
+                        <span className="text-sm font-medium text-green-700">
+                          {result.auctionSource || 'Аукціон'} #{result.lotNumber}
+                        </span>
+                      </div>
+                    )}
+                  </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {/* Main Stats Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                     {result.year && (
                       <InfoCard icon={Calendar} label="Рік" value={result.year} />
                     )}
                     {result.mileage && (
-                      <InfoCard icon={Gauge} label="Пробіг" value={`${Number(result.mileage).toLocaleString()} mi`} />
+                      <InfoCard icon={Gauge} label="Пробіг" value={`${Number(result.mileage).toLocaleString()} ${result.odometerUnit || 'mi'}`} />
                     )}
+                    {result.lotNumber && (
+                      <InfoCard icon={Receipt} label="Лот #" value={result.lotNumber} />
+                    )}
+                    {result.price && (
+                      <InfoCard icon={CurrencyDollar} label="Ціна" value={`$${Number(result.price).toLocaleString()}`} />
+                    )}
+                  </div>
+
+                  {/* Extra Info Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                     {result.location && (
                       <InfoCard icon={MapPin} label="Локація" value={result.location} />
+                    )}
+                    {result.titleStatus && (
+                      <InfoCard icon={Shield} label="Титул" value={result.titleStatus} />
+                    )}
+                    {result.fuel && (
+                      <InfoCard icon={Gauge} label="Паливо" value={result.fuel} />
+                    )}
+                    {result.transmission && (
+                      <InfoCard icon={Car} label="Трансмісія" value={result.transmission} />
+                    )}
+                    {result.drive && (
+                      <InfoCard icon={Car} label="Привід" value={result.drive} />
+                    )}
+                    {result.color && (
+                      <InfoCard icon={Car} label="Колір" value={result.color} />
+                    )}
+                    {result.engine && (
+                      <InfoCard icon={Gauge} label="Двигун" value={result.engine} />
                     )}
                     {result.images?.length > 0 && (
                       <InfoCard icon={Images} label="Фото" value={result.images.length} />
                     )}
                   </div>
 
-                  {result.damageType && (
-                    <div className="mt-6 p-4 bg-amber-50 rounded-lg">
-                      <p className="text-amber-800 font-medium">
-                        Тип пошкодження: {result.damageType}
-                      </p>
+                  {/* Damage Info */}
+                  {(result.damageType || result.secondaryDamage) && (
+                    <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Warning size={20} className="text-amber-600" />
+                        <span className="font-semibold text-amber-800">Інформація про пошкодження</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        {result.damageType && (
+                          <div>
+                            <p className="text-xs text-amber-600 mb-1">Основне пошкодження</p>
+                            <p className="font-medium text-amber-800">{result.damageType}</p>
+                          </div>
+                        )}
+                        {result.secondaryDamage && (
+                          <div>
+                            <p className="text-xs text-amber-600 mb-1">Вторинне пошкодження</p>
+                            <p className="font-medium text-amber-800">{result.secondaryDamage}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No Auction Data Notice */}
+                  {!result.auctionFound && result.status === 'PARTIAL' && (
+                    <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                      <div className="flex items-start gap-3">
+                        <Shield size={20} className="text-blue-600 mt-0.5" />
+                        <div>
+                          <p className="font-medium text-blue-800">Базова інформація з VIN декодера</p>
+                          <p className="text-sm text-blue-600 mt-1">
+                            Автомобіль не знайдено на активних аукціонах. Показано дані з VIN коду.
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
