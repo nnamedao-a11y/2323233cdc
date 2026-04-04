@@ -1,0 +1,672 @@
+/**
+ * Stealth Scraper Adapter
+ * 
+ * Обхід Cloudflare та Anti-Bot захисту через:
+ * 1. puppeteer-extra + stealth plugin
+ * 2. Рандомізація fingerprint
+ * 3. Імітація людської поведінки
+ * 4. Рандомні затримки
+ * 5. Mouse movement emulation
+ */
+
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { Browser, Page } from 'puppeteer';
+import { SourceType, DiscoveredSource, ExtractedVehicle } from '../dto/vin.dto';
+
+// Add stealth plugin
+puppeteer.use(StealthPlugin());
+
+// Use FULL Chromium, not headless shell (critical for Cloudflare bypass)
+const BROWSER_PATH = '/usr/bin/chromium';
+const MAX_CONCURRENT = 2; // Lower for stealth
+
+// Realistic user agents
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+];
+
+// Viewport sizes
+const VIEWPORTS = [
+  { width: 1920, height: 1080 },
+  { width: 1536, height: 864 },
+  { width: 1440, height: 900 },
+  { width: 1366, height: 768 },
+  { width: 1280, height: 720 },
+];
+
+// Languages
+const LANGUAGES = ['en-US', 'en-GB', 'en'];
+
+@Injectable()
+export class StealthAdapter implements OnModuleDestroy {
+  private readonly logger = new Logger(StealthAdapter.name);
+  type: SourceType = 'html_heavy';
+  
+  private browser: Browser | null = null;
+  private activePages = 0;
+  private browserLock = Promise.resolve();
+  private lastRequestTime = 0;
+
+  async onModuleDestroy() {
+    if (this.browser) {
+      await this.browser.close();
+    }
+  }
+
+  /**
+   * Extract with stealth mode
+   */
+  async extract(vin: string, source: DiscoveredSource): Promise<ExtractedVehicle | null> {
+    // Wait for available slot
+    while (this.activePages >= MAX_CONCURRENT) {
+      await this.delay(100);
+    }
+
+    // Rate limiting between requests
+    const minDelay = 2000 + Math.random() * 3000; // 2-5 seconds
+    const timeSinceLast = Date.now() - this.lastRequestTime;
+    if (timeSinceLast < minDelay) {
+      await this.delay(minDelay - timeSinceLast);
+    }
+    this.lastRequestTime = Date.now();
+
+    this.activePages++;
+
+    let page: Page | null = null;
+
+    try {
+      const browser = await this.getBrowser();
+      page = await browser.newPage();
+
+      // Randomize fingerprint
+      await this.setupStealthPage(page);
+
+      this.logger.log(`[Stealth] Navigating to ${source.domain} -> ${source.url}`);
+
+      // Navigate with timeout
+      const response = await page.goto(source.url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
+      });
+
+      const status = response?.status() || 0;
+      this.logger.log(`[Stealth] Got HTTP ${status} from ${source.domain}`);
+      
+      // Check for Cloudflare challenge or 403
+      let pageContent = await page.content();
+      const hasCloudflare = pageContent.includes('challenge-platform') || 
+                           pageContent.includes('cf-browser-verification') ||
+                           pageContent.includes('Just a moment') ||
+                           pageContent.includes('Checking your browser');
+      
+      if (hasCloudflare || status === 403) {
+        this.logger.log(`[Stealth] Cloudflare detected on ${source.domain}, waiting for challenge...`);
+        
+        // Simulate human behavior while waiting
+        await this.simulateHumanBehavior(page);
+        
+        // Wait longer for challenge to auto-resolve
+        await this.delay(8000 + Math.random() * 4000);
+        
+        // Check if challenge passed
+        pageContent = await page.content();
+        const stillBlocked = pageContent.includes('challenge-platform') || 
+                            pageContent.includes('Just a moment') ||
+                            pageContent.includes('403 Forbidden');
+        
+        if (stillBlocked) {
+          // Try clicking if there's a verify button
+          try {
+            const verifyButton = await page.$('input[type="button"], button[type="submit"], .cf-turnstile');
+            if (verifyButton) {
+              await verifyButton.click();
+              await this.delay(5000);
+            }
+          } catch {}
+          
+          // Final check
+          pageContent = await page.content();
+          if (pageContent.includes('403') || pageContent.includes('challenge-platform')) {
+            this.logger.warn(`[Stealth] Failed to bypass Cloudflare on ${source.domain}`);
+            await page.close();
+            return null;
+          }
+        }
+        
+        this.logger.log(`[Stealth] Cloudflare challenge passed on ${source.domain}`);
+      }
+
+      if (status >= 400 && status !== 403) {
+        this.logger.debug(`[Stealth] HTTP ${status} from ${source.name}`);
+        await page.close();
+        return null;
+      }
+
+      // Wait for page to fully load
+      await page.waitForSelector('body', { timeout: 10000 }).catch(() => {});
+      
+      // Simulate human behavior
+      await this.simulateHumanBehavior(page);
+
+      // Wait for dynamic content to render
+      await this.delay(3000 + Math.random() * 2000);
+
+      // Extract data
+      const data = await this.extractVehicleData(page, vin, source);
+      
+      await page.close();
+      page = null;
+
+      return data;
+
+    } catch (error: any) {
+      this.logger.warn(`[Stealth] Error from ${source.name}: ${error.message}`);
+      if (page) await page.close().catch(() => {});
+      return null;
+    } finally {
+      this.activePages--;
+    }
+  }
+
+  /**
+   * Setup stealth page with randomized fingerprint
+   */
+  private async setupStealthPage(page: Page): Promise<void> {
+    // Random user agent - use latest Chrome versions
+    const chromeVersion = 120 + Math.floor(Math.random() * 5);
+    const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion}.0.0.0 Safari/537.36`;
+    await page.setUserAgent(userAgent);
+
+    // Random viewport with slight variations
+    const baseViewport = VIEWPORTS[Math.floor(Math.random() * VIEWPORTS.length)];
+    await page.setViewport({
+      width: baseViewport.width + Math.floor(Math.random() * 50),
+      height: baseViewport.height + Math.floor(Math.random() * 50),
+    });
+
+    // Set extra HTTP headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Ch-Ua': `"Not_A Brand";v="8", "Chromium";v="${chromeVersion}", "Google Chrome";v="${chromeVersion}"`,
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Cache-Control': 'max-age=0',
+    });
+
+    // Advanced evasion techniques
+    await page.evaluateOnNewDocument(() => {
+      // Delete webdriver property completely
+      delete (navigator as any).webdriver;
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+      });
+      
+      // Chrome runtime mock
+      (window as any).chrome = {
+        runtime: {
+          connect: () => {},
+          sendMessage: () => {},
+          onMessage: { addListener: () => {} },
+        },
+        loadTimes: () => ({
+          commitLoadTime: Date.now() / 1000 - Math.random() * 10,
+          connectionInfo: 'http/1.1',
+          finishDocumentLoadTime: Date.now() / 1000 - Math.random() * 5,
+          finishLoadTime: Date.now() / 1000 - Math.random() * 3,
+          firstPaintAfterLoadTime: 0,
+          firstPaintTime: Date.now() / 1000 - Math.random() * 8,
+          navigationType: 'Other',
+          npnNegotiatedProtocol: 'http/1.1',
+          requestTime: Date.now() / 1000 - Math.random() * 12,
+          startLoadTime: Date.now() / 1000 - Math.random() * 11,
+          wasAlternateProtocolAvailable: false,
+          wasFetchedViaSpdy: false,
+          wasNpnNegotiated: false,
+        }),
+        csi: () => ({ pageT: Date.now(), startE: Date.now() - Math.random() * 5000 }),
+        app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed' } },
+      };
+
+      // Languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+        configurable: true,
+      });
+
+      // Proper plugins mock (like real Chrome)
+      const pluginData = [
+        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+        { name: 'Native Client', filename: 'internal-nacl-plugin' },
+      ];
+      const plugins = pluginData.map(p => {
+        const plugin = Object.create(Plugin.prototype);
+        Object.defineProperties(plugin, {
+          name: { get: () => p.name },
+          filename: { get: () => p.filename },
+          description: { get: () => 'Portable Document Format' },
+          length: { get: () => 1 },
+        });
+        return plugin;
+      });
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => plugins,
+        configurable: true,
+      });
+
+      // Platform
+      Object.defineProperty(navigator, 'platform', {
+        get: () => 'Win32',
+        configurable: true,
+      });
+
+      // Hardware
+      Object.defineProperty(navigator, 'hardwareConcurrency', {
+        get: () => 4 + Math.floor(Math.random() * 8),
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'deviceMemory', {
+        get: () => [4, 8, 16][Math.floor(Math.random() * 3)],
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'maxTouchPoints', {
+        get: () => 0,
+        configurable: true,
+      });
+
+      // WebGL
+      const getParameter = WebGLRenderingContext.prototype.getParameter;
+      WebGLRenderingContext.prototype.getParameter = function(parameter: number) {
+        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+        return getParameter.call(this, parameter);
+      };
+
+      // Permissions API
+      const originalQuery = window.navigator.permissions.query;
+      (window.navigator.permissions as any).query = (params: any) => {
+        if (params.name === 'notifications') {
+          return Promise.resolve({ state: 'prompt', onchange: null } as any);
+        }
+        return originalQuery.call(navigator.permissions, params);
+      };
+
+      // Connection API
+      Object.defineProperty(navigator, 'connection', {
+        get: () => ({
+          effectiveType: '4g',
+          rtt: 50,
+          downlink: 10,
+          saveData: false,
+        }),
+        configurable: true,
+      });
+    });
+  }
+
+  /**
+   * Simulate human-like behavior - more realistic
+   */
+  private async simulateHumanBehavior(page: Page): Promise<void> {
+    const viewport = page.viewport();
+    if (!viewport) return;
+
+    // Initial pause - like human reading
+    await this.delay(500 + Math.random() * 1000);
+
+    // Bezier curve mouse movements (more human-like)
+    const movements = 3 + Math.floor(Math.random() * 3);
+    let lastX = Math.floor(viewport.width / 2);
+    let lastY = Math.floor(viewport.height / 2);
+
+    for (let i = 0; i < movements; i++) {
+      const targetX = Math.floor(Math.random() * viewport.width * 0.8 + viewport.width * 0.1);
+      const targetY = Math.floor(Math.random() * viewport.height * 0.8 + viewport.height * 0.1);
+      
+      // Move in multiple small steps with varying speeds
+      const steps = 15 + Math.floor(Math.random() * 15);
+      for (let step = 0; step < steps; step++) {
+        const progress = step / steps;
+        // Ease-in-out curve
+        const eased = progress < 0.5 
+          ? 2 * progress * progress 
+          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        
+        const x = lastX + (targetX - lastX) * eased;
+        const y = lastY + (targetY - lastY) * eased;
+        await page.mouse.move(x, y);
+        await this.delay(10 + Math.random() * 20);
+      }
+      
+      lastX = targetX;
+      lastY = targetY;
+      await this.delay(100 + Math.random() * 300);
+    }
+
+    // Random scrolls - like reading content
+    const scrolls = 2 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < scrolls; i++) {
+      const scrollAmount = 100 + Math.floor(Math.random() * 400);
+      await page.evaluate((amount) => {
+        window.scrollBy({ top: amount, behavior: 'smooth' });
+      }, scrollAmount);
+      await this.delay(300 + Math.random() * 700);
+    }
+
+    // Sometimes scroll back up
+    if (Math.random() > 0.5) {
+      await page.evaluate(() => {
+        window.scrollBy({ top: -150, behavior: 'smooth' });
+      });
+      await this.delay(200 + Math.random() * 300);
+    }
+
+    // Final pause
+    await this.delay(300 + Math.random() * 500);
+  }
+
+  /**
+   * Extract vehicle data from page - aggressive parsing
+   */
+  private async extractVehicleData(
+    page: Page,
+    vin: string,
+    source: DiscoveredSource,
+  ): Promise<ExtractedVehicle | null> {
+    const data = await page.evaluate((targetVin) => {
+      const getText = (selector: string): string | null => {
+        const el = document.querySelector(selector);
+        return el?.textContent?.trim() || null;
+      };
+
+      const bodyText = document.body.innerText;
+      const pageHtml = document.body.innerHTML;
+
+      // Find VIN on page
+      const vinRegex = /\b([A-HJ-NPR-Z0-9]{17})\b/gi;
+      const vinMatches: string[] = bodyText.match(vinRegex) || [];
+      const foundVin = vinMatches.find(v => v.toUpperCase() === targetVin.toUpperCase()) || 
+                       vinMatches[0] || null;
+
+      // Extract year from text - common patterns
+      let year: number | null = null;
+      const yearPattern = /\b(19[89]\d|20[0-2]\d)\b\s+(TESLA|TOYOTA|HONDA|FORD|CHEVROLET|BMW|MERCEDES|AUDI|NISSAN|PORSCHE|VOLKSWAGEN|HYUNDAI|KIA|MAZDA|SUBARU|JEEP|DODGE|RAM|GMC|CADILLAC|LEXUS|INFINITI|ACURA|VOLVO|LAND ROVER|JAGUAR)/i;
+      const yearMatch = bodyText.match(yearPattern);
+      if (yearMatch) {
+        year = parseInt(yearMatch[1], 10);
+      }
+
+      // Extract make from text
+      let make: string | null = null;
+      const makes = ['TESLA', 'TOYOTA', 'HONDA', 'FORD', 'CHEVROLET', 'BMW', 'MERCEDES-BENZ', 'MERCEDES', 'AUDI', 
+                     'LEXUS', 'NISSAN', 'PORSCHE', 'VOLKSWAGEN', 'HYUNDAI', 'KIA',
+                     'MAZDA', 'SUBARU', 'JEEP', 'DODGE', 'RAM', 'GMC', 'CADILLAC', 'INFINITI',
+                     'ACURA', 'VOLVO', 'LAND ROVER', 'JAGUAR', 'MASERATI', 'FERRARI', 'LAMBORGHINI'];
+      for (const m of makes) {
+        if (bodyText.toUpperCase().includes(m)) {
+          make = m;
+          break;
+        }
+      }
+
+      // Extract model - pattern after make
+      let model: string | null = null;
+      if (make) {
+        const modelPattern = new RegExp(make + '\\s+(MODEL\\s*[SX3Y]|[A-Z0-9][A-Z0-9\\-\\s]{1,20})', 'i');
+        const modelMatch = bodyText.match(modelPattern);
+        if (modelMatch) {
+          model = modelMatch[1].trim();
+        }
+      }
+
+      // Extract title - comprehensive approach
+      let title: string | null = null;
+      // Try to find pattern like "2012 TESLA MODEL S"
+      const titlePattern = /\b(19[89]\d|20[0-2]\d)\s+([A-Z][A-Z\s\-]+[A-Z0-9])\b/gi;
+      const titleMatches = bodyText.match(titlePattern);
+      if (titleMatches && titleMatches.length > 0) {
+        // Find the one that matches our make
+        for (const t of titleMatches) {
+          if (make && t.toUpperCase().includes(make)) {
+            title = t;
+            break;
+          }
+        }
+        if (!title) title = titleMatches[0];
+      }
+
+      // Lot number - multiple patterns
+      let lotNumber: string | null = null;
+      const lotPatterns = [
+        /Lot\s*#?\s*(\d{7,9})/i,
+        /Lot\s*(?:Number|ID)?[:\s]*(\d+)/i,
+        /(\d{7,9})\s*Watch/i, // Copart specific
+      ];
+      for (const pattern of lotPatterns) {
+        const match = bodyText.match(pattern);
+        if (match) {
+          lotNumber = match[1];
+          break;
+        }
+      }
+
+      // Price - multiple patterns
+      let price: number | null = null;
+      const pricePatterns = [
+        /retail\s*value[:\s]*\$?([\d,]+)/i,
+        /current\s*bid[:\s]*\$?([\d,]+)/i,
+        /price[:\s]*\$?([\d,]+)/i,
+        /bid[:\s]*\$?([\d,]+)/i,
+        /\$([\d,]+)/,
+      ];
+      for (const pattern of pricePatterns) {
+        const match = bodyText.match(pattern);
+        if (match) {
+          const parsed = parseInt(match[1].replace(/,/g, ''), 10);
+          if (parsed > 100 && parsed < 1000000) { // Reasonable car price range
+            price = parsed;
+            break;
+          }
+        }
+      }
+
+      // Mileage/Odometer
+      let mileage: number | null = null;
+      const mileagePatterns = [
+        /Odometer[:\s]*(\d{1,3},?\d{3})/i,
+        /(\d{1,3},?\d{3})\s*(?:miles?|mi)\b/i,
+        /mileage[:\s]*(\d{1,3},?\d{3})/i,
+      ];
+      for (const pattern of mileagePatterns) {
+        const match = bodyText.match(pattern);
+        if (match) {
+          mileage = parseInt(match[1].replace(/,/g, ''), 10);
+          break;
+        }
+      }
+
+      // Damage type
+      let damage: string | null = null;
+      const damagePatterns = [
+        /(?:primary\s*)?damage[:\s]*([A-Za-z\s]+?)(?:\n|,|Odometer|Sale)/i,
+        /(Front End|Rear End|Side|Roll Over|Flood|Fire|Mechanical|Hail|Vandalism|All Over|Minor Dent)/i,
+      ];
+      for (const pattern of damagePatterns) {
+        const match = bodyText.match(pattern);
+        if (match) {
+          damage = match[1].trim();
+          break;
+        }
+      }
+
+      // Images
+      const images: string[] = [];
+      document.querySelectorAll('img').forEach(img => {
+        const src = img.src || img.getAttribute('data-src') || '';
+        if (src.length > 50 && 
+            (src.includes('lot') || src.includes('vehicle') || src.includes('image')) &&
+            !src.includes('icon') && !src.includes('logo') && !src.includes('placeholder')) {
+          images.push(src);
+        }
+      });
+
+      // Location
+      let location: string | null = null;
+      const locationPatterns = [
+        /location[:\s]*([A-Za-z\s]+,\s*[A-Z]{2})/i,
+        /yard[:\s]*([A-Za-z\s]+)/i,
+      ];
+      for (const pattern of locationPatterns) {
+        const match = bodyText.match(pattern);
+        if (match) {
+          location = match[1].trim();
+          break;
+        }
+      }
+
+      return {
+        foundVin: foundVin?.toUpperCase() || null,
+        title,
+        price,
+        images: images.slice(0, 15),
+        lotNumber,
+        year,
+        make,
+        model,
+        mileage,
+        damage,
+        location,
+      };
+    }, vin);
+
+    // Calculate confidence
+    let confidence = 0.4; // Base for stealth scraping
+    
+    // P0 CRITICAL: VIN VALIDATION
+    const normalizedTargetVin = vin.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '');
+    const normalizedFoundVin = (data.foundVin || '').replace(/[^A-HJ-NPR-Z0-9]/g, '');
+    const vinMatched = normalizedFoundVin === normalizedTargetVin && normalizedFoundVin.length === 17;
+    
+    if (vinMatched) {
+      confidence += 0.25; // VIN match bonus
+    } else if (data.foundVin) {
+      // VIN found but doesn't match - P0 CRITICAL BUG FIX
+      this.logger.warn(
+        `[Stealth] P0 REJECT: VIN mismatch from ${source.name}. ` +
+        `Expected: ${normalizedTargetVin}, Got: ${normalizedFoundVin}`
+      );
+      confidence -= 0.5; // Heavy penalty
+    }
+    
+    if (data.price) confidence += 0.1;
+    if (data.images.length > 0) confidence += 0.05;
+    if (data.title || (data.year && data.make)) confidence += 0.15;
+    if (data.lotNumber) confidence += 0.1;
+
+    this.logger.log(
+      `[Stealth] ${source.name}: vin=${!!data.foundVin}, vinMatched=${vinMatched}, year=${data.year}, make=${data.make}, lot=${data.lotNumber}, price=${data.price}, conf=${confidence.toFixed(2)}`
+    );
+
+    // Skip if no useful data found OR VIN doesn't match (P0)
+    if (!data.foundVin && !data.title && !data.year && !data.lotNumber) {
+      this.logger.warn(`[Stealth] ${source.name}: No useful data extracted`);
+      return null;
+    }
+    
+    // P0: If VIN found but doesn't match - REJECT completely
+    if (data.foundVin && !vinMatched) {
+      this.logger.warn(`[Stealth] ${source.name}: Rejecting - wrong vehicle returned`);
+      return null;
+    }
+
+    return {
+      vin: data.foundVin || vin.toUpperCase(),
+      title: data.title || (data.year && data.make ? `${data.year} ${data.make} ${data.model || ''}`.trim() : undefined),
+      year: data.year || undefined,
+      make: data.make || undefined,
+      model: data.model || undefined,
+      lotNumber: data.lotNumber || undefined,
+      location: data.location || undefined,
+      price: data.price || undefined,
+      images: data.images,
+      damageType: data.damage || undefined,
+      mileage: data.mileage || undefined,
+      source: source.name,
+      sourceUrl: source.url,
+      sourceTier: source.tier,
+      confidence,
+      extractedAt: new Date(),
+      responseTime: 0,
+    };
+  }
+
+  /**
+   * Get or create browser instance
+   */
+  private async getBrowser(): Promise<Browser> {
+    if (!this.browser) {
+      await this.browserLock;
+      this.browserLock = (async () => {
+        if (!this.browser) {
+          this.logger.log('[Stealth] Launching FULL Chromium with stealth mode...');
+          
+          // Proxy configuration (set in .env: SCRAPING_PROXY=http://user:pass@host:port)
+          const proxyServer = process.env.SCRAPING_PROXY;
+          const proxyArgs = proxyServer ? [`--proxy-server=${proxyServer}`] : [];
+          
+          this.browser = await puppeteer.launch({
+            headless: true, // Use true, not 'new' for Chromium 146+
+            executablePath: BROWSER_PATH,
+            ignoreDefaultArgs: ['--enable-automation', '--enable-blink-features=IdleDetection'],
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-gpu',
+              '--disable-dev-shm-usage',
+              '--disable-blink-features=AutomationControlled',
+              '--disable-features=IsolateOrigins,site-per-process',
+              '--disable-web-security',
+              '--disable-features=BlockInsecurePrivateNetworkRequests',
+              '--window-size=1920,1080',
+              '--start-maximized',
+              '--disable-infobars',
+              '--no-first-run',
+              '--no-default-browser-check',
+              '--disable-extensions',
+              '--disable-component-extensions-with-background-pages',
+              '--disable-default-apps',
+              '--mute-audio',
+              '--ignore-certificate-errors',
+              '--lang=en-US,en',
+              '--user-data-dir=/tmp/chromium-user-data-' + Date.now(),
+              ...proxyArgs,
+            ],
+          }) as unknown as Browser;
+          
+          this.logger.log(`[Stealth] Browser launched: ${BROWSER_PATH}`);
+        }
+      })();
+      await this.browserLock;
+    }
+    return this.browser!;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}

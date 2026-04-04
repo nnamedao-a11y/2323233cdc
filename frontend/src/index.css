@@ -1,0 +1,515 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 98%;
+  --foreground: 240 10% 4%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 4%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 4%;
+  --primary: 240 6% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 5% 96%;
+  --secondary-foreground: 240 6% 10%;
+  --muted: 240 5% 96%;
+  --muted-foreground: 240 4% 46%;
+  --accent: 240 5% 96%;
+  --accent-foreground: 240 6% 10%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 6% 90%;
+  --input: 240 6% 90%;
+  --ring: 240 6% 10%;
+  --radius: 0.75rem;
+  --chart-1: 173 58% 39%;
+  --chart-2: 43 74% 66%;
+  --chart-3: 0 84% 60%;
+  --chart-4: 243 75% 59%;
+  --chart-5: 262 83% 58%;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+body {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  background-color: #F7F7F8;
+  color: #18181B;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Cabinet Grotesk', system-ui, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F4F4F5;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D4D4D8;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #A1A1AA;
+}
+
+/* Card styles */
+.card {
+  background: white;
+  border-radius: 16px;
+  border: 1px solid #E4E4E7;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  border-color: #D4D4D8;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+}
+
+/* Premium table styles */
+.table-premium {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.table-premium th {
+  text-align: left;
+  padding: 14px 20px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #71717A;
+  background: #FAFAFA;
+  border-bottom: 1px solid #E4E4E7;
+}
+
+.table-premium td {
+  padding: 16px 20px;
+  border-bottom: 1px solid #F4F4F5;
+  font-size: 14px;
+  color: #3F3F46;
+}
+
+.table-premium tr:last-child td {
+  border-bottom: none;
+}
+
+.table-premium tr:hover td {
+  background: #FAFAFA;
+}
+
+/* Status badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 9999px;
+}
+
+.status-new { background: #EEF2FF; color: #4F46E5; }
+.status-contacted { background: #FEF3C7; color: #D97706; }
+.status-qualified { background: #D1FAE5; color: #059669; }
+.status-proposal { background: #EDE9FE; color: #7C3AED; }
+.status-negotiation { background: #FCE7F3; color: #DB2777; }
+.status-won { background: #D1FAE5; color: #059669; }
+.status-lost { background: #FEE2E2; color: #DC2626; }
+.status-archived { background: #F4F4F5; color: #71717A; }
+
+/* KPI card styling */
+.kpi-card {
+  position: relative;
+  overflow: hidden;
+  background: white;
+  border-radius: 16px;
+  border: 1px solid #E4E4E7;
+  padding: 20px 24px;
+  transition: all 0.2s ease;
+}
+
+.kpi-card:hover {
+  border-color: #D4D4D8;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+}
+
+.kpi-value {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: #18181B;
+}
+
+.kpi-label {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #71717A;
+  margin-top: 8px;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  background: white;
+  border-right: 1px solid #E4E4E7;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #71717A;
+  cursor: pointer;
+  border-radius: 12px;
+  margin: 2px 8px;
+  transition: all 0.15s ease;
+}
+
+.sidebar-item:hover {
+  background: #F4F4F5;
+  color: #18181B;
+}
+
+.sidebar-item.active {
+  background: #18181B;
+  color: white;
+}
+
+/* Sidebar Group Header */
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: calc(100% - 16px);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #71717A;
+  cursor: pointer;
+  border-radius: 10px;
+  margin: 4px 8px 2px 8px;
+  transition: all 0.15s ease;
+  border: none;
+  background: transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-group-header:hover {
+  background: #F4F4F5;
+  color: #3F3F46;
+}
+
+.sidebar-group-header.active {
+  color: #18181B;
+  background: #F4F4F5;
+}
+
+/* Sidebar Group Items Container */
+.sidebar-group-items {
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 2px solid #E4E4E7;
+  margin-bottom: 8px;
+}
+
+/* Sidebar Subitem */
+.sidebar-subitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #71717A;
+  cursor: pointer;
+  border-radius: 10px;
+  margin: 2px 8px 2px 0;
+  transition: all 0.15s ease;
+}
+
+.sidebar-subitem:hover {
+  background: #F4F4F5;
+  color: #18181B;
+}
+
+.sidebar-subitem.active {
+  background: #18181B;
+  color: white;
+}
+
+/* Button styles */
+.btn-primary {
+  background: #18181B;
+  color: white;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-primary:hover {
+  background: #27272A;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: white;
+  color: #18181B;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid #E4E4E7;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-secondary:hover {
+  background: #F4F4F5;
+  border-color: #D4D4D8;
+}
+
+/* Input fields */
+.input {
+  background: white;
+  border: 1px solid #E4E4E7;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 14px;
+  color: #18181B;
+  transition: all 0.15s ease;
+  width: 100%;
+}
+
+.input::placeholder {
+  color: #A1A1AA;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #18181B;
+  box-shadow: 0 0 0 3px rgba(24,24,27,0.08);
+}
+
+/* Period selector tabs */
+.period-tabs {
+  display: inline-flex;
+  background: #F4F4F5;
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.period-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #71717A;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+  background: transparent;
+}
+
+.period-tab:hover {
+  color: #3F3F46;
+}
+
+.period-tab.active {
+  background: white;
+  color: #18181B;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+/* Section card */
+.section-card {
+  background: white;
+  border-radius: 16px;
+  border: 1px solid #E4E4E7;
+  padding: 24px;
+}
+
+.section-title {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  color: #18181B;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+/* Clean section title - no background box around icon */
+.section-title-clean {
+  font-family: 'Cabinet Grotesk', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  color: #18181B;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.section-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Metric row */
+.metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #F4F4F5;
+}
+
+.metric-row:last-child {
+  border-bottom: none;
+}
+
+.metric-label {
+  font-size: 14px;
+  color: #71717A;
+}
+
+.metric-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #18181B;
+}
+
+.metric-value.alert {
+  color: #DC2626;
+}
+
+/* Animation utilities */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.3s ease-out forwards;
+}
+
+/* Custom Select / Dropdown Styles */
+select.input,
+.custom-select {
+  background: white;
+  border: 1px solid #E4E4E7;
+  border-radius: 12px;
+  padding: 12px 16px;
+  padding-right: 40px;
+  font-size: 14px;
+  color: #18181B;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717A' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px;
+  transition: all 0.15s ease;
+}
+
+select.input:hover,
+.custom-select:hover {
+  border-color: #D4D4D8;
+}
+
+select.input:focus,
+.custom-select:focus {
+  outline: none;
+  border-color: #18181B;
+  box-shadow: 0 0 0 3px rgba(24,24,27,0.08);
+}
+
+/* Dropdown options styling */
+select.input option,
+.custom-select option {
+  background: white;
+  color: #18181B;
+  padding: 12px 16px;
+  font-size: 14px;
+}
+
+select.input option:hover,
+.custom-select option:hover {
+  background: #F7F7F8;
+}
+
+select.input option:checked,
+.custom-select option:checked {
+  background: #18181B;
+  color: white;
+}
+
