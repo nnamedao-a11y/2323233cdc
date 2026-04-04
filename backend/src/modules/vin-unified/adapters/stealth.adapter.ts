@@ -397,38 +397,41 @@ export class StealthAdapter implements OnModuleDestroy {
       const bodyText = document.body.innerText;
       const pageHtml = document.body.innerHTML;
 
-      // Find VIN on page
+      // Find VIN on page - STRICT MATCH ONLY (P0 fix)
       const vinRegex = /\b([A-HJ-NPR-Z0-9]{17})\b/gi;
       const vinMatches: string[] = bodyText.match(vinRegex) || [];
-      const foundVin = vinMatches.find(v => v.toUpperCase() === targetVin.toUpperCase()) || 
-                       vinMatches[0] || null;
+      // P0 FIX: Only accept EXACT VIN match - do NOT fallback to first VIN
+      const foundVin = vinMatches.find(v => v.toUpperCase() === targetVin.toUpperCase()) || null;
 
-      // Extract year from text - common patterns
+      // Extract year from text - ONLY from context near VIN
+      // First, find all text blocks containing our VIN
       let year: number | null = null;
-      const yearPattern = /\b(19[89]\d|20[0-2]\d)\b\s+(TESLA|TOYOTA|HONDA|FORD|CHEVROLET|BMW|MERCEDES|AUDI|NISSAN|PORSCHE|VOLKSWAGEN|HYUNDAI|KIA|MAZDA|SUBARU|JEEP|DODGE|RAM|GMC|CADILLAC|LEXUS|INFINITI|ACURA|VOLVO|LAND ROVER|JAGUAR)/i;
-      const yearMatch = bodyText.match(yearPattern);
-      if (yearMatch) {
-        year = parseInt(yearMatch[1], 10);
-      }
-
-      // Extract make from text
       let make: string | null = null;
-      const makes = ['TESLA', 'TOYOTA', 'HONDA', 'FORD', 'CHEVROLET', 'BMW', 'MERCEDES-BENZ', 'MERCEDES', 'AUDI', 
-                     'LEXUS', 'NISSAN', 'PORSCHE', 'VOLKSWAGEN', 'HYUNDAI', 'KIA',
-                     'MAZDA', 'SUBARU', 'JEEP', 'DODGE', 'RAM', 'GMC', 'CADILLAC', 'INFINITI',
-                     'ACURA', 'VOLVO', 'LAND ROVER', 'JAGUAR', 'MASERATI', 'FERRARI', 'LAMBORGHINI'];
-      for (const m of makes) {
-        if (bodyText.toUpperCase().includes(m)) {
-          make = m;
-          break;
+      let model: string | null = null;
+      
+      // Find context around VIN (200 chars before and after)
+      const vinIndex = bodyText.toUpperCase().indexOf(targetVin.toUpperCase());
+      const contextStart = Math.max(0, vinIndex - 200);
+      const contextEnd = Math.min(bodyText.length, vinIndex + 217 + 200); // VIN is 17 chars
+      const vinContext = vinIndex >= 0 ? bodyText.slice(contextStart, contextEnd) : '';
+      
+      // Extract year/make from context near VIN ONLY
+      if (vinContext) {
+        const yearPattern = /\b(19[89]\d|20[0-2]\d)\b\s+(TESLA|TOYOTA|HONDA|FORD|CHEVROLET|BMW|MERCEDES|AUDI|NISSAN|PORSCHE|VOLKSWAGEN|HYUNDAI|KIA|MAZDA|SUBARU|JEEP|DODGE|RAM|GMC|CADILLAC|LEXUS|INFINITI|ACURA|VOLVO|LAND ROVER|JAGUAR)/i;
+        const yearMatch = vinContext.match(yearPattern);
+        if (yearMatch) {
+          year = parseInt(yearMatch[1], 10);
+          make = yearMatch[2].toUpperCase();
         }
       }
+      
+      // If no year/make from context, don't fall back to page-wide search
+      // LocalDecoder will provide this data from VIN decoding
 
-      // Extract model - pattern after make
-      let model: string | null = null;
-      if (make) {
+      // Extract model - only if we have make from VIN context
+      if (make && vinContext) {
         const modelPattern = new RegExp(make + '\\s+(MODEL\\s*[SX3Y]|[A-Z0-9][A-Z0-9\\-\\s]{1,20})', 'i');
-        const modelMatch = bodyText.match(modelPattern);
+        const modelMatch = vinContext.match(modelPattern);
         if (modelMatch) {
           model = modelMatch[1].trim();
         }
@@ -583,8 +586,9 @@ export class StealthAdapter implements OnModuleDestroy {
     );
 
     // Skip if no useful data found OR VIN doesn't match (P0)
-    if (!data.foundVin && !data.title && !data.year && !data.lotNumber) {
-      this.logger.warn(`[Stealth] ${source.name}: No useful data extracted`);
+    // P0 CRITICAL: Must have VIN match to return data
+    if (!data.foundVin) {
+      this.logger.warn(`[Stealth] ${source.name}: VIN not found on page - REJECTING (P0 rule)`);
       return null;
     }
     
