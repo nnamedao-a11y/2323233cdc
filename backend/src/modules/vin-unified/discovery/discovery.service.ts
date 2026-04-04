@@ -95,11 +95,11 @@ const SOURCES: DiscoveredSource[] = [
   {
     name: 'StatVin',
     domain: 'stat.vin',
-    url: 'https://stat.vin/en/cars/{VIN}',
+    url: 'https://stat.vin/cars/{VIN}',
     type: 'stealth',
-    tier: 2,
-    priority: 80,
-    trustScore: 0.75,
+    tier: 1,  // Підвищую пріоритет - працює найкраще!
+    priority: 95,
+    trustScore: 0.90,
     rateLimit: { requestsPerMinute: 10 },
   },
 

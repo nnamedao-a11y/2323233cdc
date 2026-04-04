@@ -99,11 +99,13 @@ export class StealthAdapter implements OnModuleDestroy {
       this.logger.log(`[Stealth] Got HTTP ${status} from ${source.domain}`);
       
       // Check for Cloudflare challenge or 403
+      // Skip Cloudflare handling for stat.vin - it uses different loading pattern
       let pageContent = await page.content();
-      const hasCloudflare = pageContent.includes('challenge-platform') || 
+      const hasCloudflare = !source.domain.includes('stat.vin') && (
+                           pageContent.includes('challenge-platform') || 
                            pageContent.includes('cf-browser-verification') ||
                            pageContent.includes('Just a moment') ||
-                           pageContent.includes('Checking your browser');
+                           pageContent.includes('Checking your browser'));
       
       if (hasCloudflare || status === 403) {
         this.logger.log(`[Stealth] Cloudflare detected on ${source.domain}, waiting for challenge...`);
@@ -506,6 +508,112 @@ export class StealthAdapter implements OnModuleDestroy {
   }
 
   /**
+   * Special extraction for stat.vin - they have excellent structured data
+   */
+  private async extractStatVinData(
+    page: Page,
+    vin: string,
+    source: DiscoveredSource,
+  ): Promise<ExtractedVehicle | null> {
+    this.logger.log(`[Stealth] Using StatVin special extraction for ${vin}`);
+    
+    // First get the raw body text for debugging
+    const bodyText = await page.evaluate(() => document.body.innerText || '');
+    
+    // Check if VIN exists
+    if (!bodyText.toUpperCase().includes(vin.toUpperCase())) {
+      this.logger.warn(`[Stealth] StatVin: VIN not found on page`);
+      return null;
+    }
+    
+    // Extract title from H1
+    const title = await page.evaluate(() => {
+      const h1 = document.querySelector('h1');
+      return h1?.textContent?.trim() || null;
+    });
+    
+    // Parse title for year/make/model
+    let year: number | null = null;
+    let make: string | null = null;
+    let model: string | null = null;
+    
+    if (title) {
+      const match = title.match(/^([A-Z]+)\s+([A-Z0-9]+(?:\s+[A-Z0-9]+)?)\s+(20[0-2]\d|19[89]\d)/i);
+      if (match) {
+        make = match[1].toUpperCase();
+        model = match[2].trim();
+        year = parseInt(match[3], 10);
+      }
+    }
+    
+    // Extract price - find first $ after "Current Bid"
+    let price: number | null = null;
+    const bidIdx = bodyText.indexOf('Current Bid');
+    if (bidIdx > -1) {
+      const after = bodyText.substring(bidIdx, bidIdx + 100);
+      const priceMatch = after.match(/\$([\d,]+(?:\.\d{2})?)/);
+      if (priceMatch) {
+        price = parseFloat(priceMatch[1].replace(/,/g, ''));
+        this.logger.debug(`[Stealth] StatVin price found: $${price}`);
+      }
+    }
+    
+    // Extract Buy Now price
+    let buyNowPrice: number | null = null;
+    const buyIdx = bodyText.toLowerCase().indexOf('buy');
+    if (buyIdx > -1) {
+      const after = bodyText.substring(buyIdx, buyIdx + 80);
+      const match = after.match(/\$([\d,]+)/);
+      if (match) {
+        const val = parseInt(match[1].replace(/,/g, ''), 10);
+        if (val > 100) buyNowPrice = val;
+      }
+    }
+    
+    // Auction source
+    let auctionName: string | null = null;
+    if (bodyText.includes('IAAI')) auctionName = 'IAAI';
+    else if (bodyText.includes('Copart')) auctionName = 'Copart';
+    
+    // Mileage - look for pattern like "78 360 mi"
+    let mileage: number | null = null;
+    const mileageMatch = bodyText.match(/(\d[\d\s,]*\d)\s*(?:mi|km|miles)/i);
+    if (mileageMatch) {
+      mileage = parseInt(mileageMatch[1].replace(/[\s,]/g, ''), 10);
+    }
+    
+    // Images
+    const images = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('img'))
+        .map(img => img.src || img.getAttribute('data-src') || '')
+        .filter(src => src.length > 50 && !src.includes('logo') && !src.includes('icon'))
+        .slice(0, 20);
+    });
+    
+    this.logger.log(
+      `[Stealth] StatVin: vin=${vin}, year=${year}, make=${make}, model=${model}, price=${price}, buyNow=${buyNowPrice}, mileage=${mileage}, images=${images.length}`
+    );
+
+    return {
+      vin: vin.toUpperCase(),
+      title: title || `${year || ''} ${make || ''} ${model || ''}`.trim() || undefined,
+      year: year || undefined,
+      make: make || undefined,
+      model: model || undefined,
+      price: price || buyNowPrice || undefined,
+      images: images || [],
+      mileage: mileage || undefined,
+      odometerUnit: 'mi',
+      source: source.name,
+      sourceUrl: source.url,
+      sourceTier: source.tier,
+      confidence: 0.90,
+      extractedAt: new Date(),
+      responseTime: 0,
+    };
+  }
+
+  /**
    * Extract vehicle data from page - aggressive parsing
    */
   private async extractVehicleData(
@@ -513,6 +621,11 @@ export class StealthAdapter implements OnModuleDestroy {
     vin: string,
     source: DiscoveredSource,
   ): Promise<ExtractedVehicle | null> {
+    // Special extraction for stat.vin - they have structured data
+    if (source.domain === 'stat.vin') {
+      return this.extractStatVinData(page, vin, source);
+    }
+    
     const data = await page.evaluate((targetVin) => {
       const getText = (selector: string): string | null => {
         const el = document.querySelector(selector);

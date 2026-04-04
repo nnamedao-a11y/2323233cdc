@@ -66,8 +66,8 @@ export class HealthAwareTierFactory {
     // Build tiers with health awareness
     const tiers: SourceTierConfig[] = [];
 
-    // Tier 1: Primary sources (Copart, CopartDirect)
-    const tier1Sources = ['Copart', 'CopartDirect', 'IAAI']
+    // Tier 1: Primary sources (Copart, CopartDirect, IAAI, StatVin)
+    const tier1Sources = ['Copart', 'CopartDirect', 'IAAI', 'StatVin']
       .map(name => byName.get(name))
       .filter(s => s && !this.isHardDegraded(s.name)) as DiscoveredSource[];
 
@@ -94,7 +94,7 @@ export class HealthAwareTierFactory {
 
     // Tier 3: Fallback (blocked sources - only if really needed)
     const fallbackDelay = Math.max(10000, Math.floor(copartAvgMs * 1.5));
-    const tier3Sources = ['BidFax', 'Poctra', 'StatVin', 'VehicleHistory']
+    const tier3Sources = ['BidFax', 'Poctra', 'VehicleHistory']
       .map(name => byName.get(name))
       .filter(s => s && !this.isHardDegraded(s.name)) as DiscoveredSource[];
 
