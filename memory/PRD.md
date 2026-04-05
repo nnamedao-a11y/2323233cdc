@@ -1,37 +1,66 @@
-# BIBI Cars VIN Parser - PRD v9 (PRODUCTION)
+# BIBI Cars VIN Parser - PRD v10 (PRODUCTION)
 
 ## Original Problem Statement
-Клонувати репозиторій, вивчити архітектуру VIN парсингу та завершити логіку парсингу для Copart та IAAI згідно аудиту.
+Клонувати репозиторій, вивчити архітектуру VIN парсингу та завершити логіку парсингу для Copart та IAAI.
 
 ## ✅ СТАТУС: ГОТОВО - 2026-04-05
 
 ### Що реалізовано:
 
-#### 1. СПЕЦІАЛІЗОВАНИЙ ПАРСИНГ ДЛЯ COPART
-**Новий метод**: `extractCopartData()`
-- Специфічні селектори для Copart структури
-- Парсинг: lot number, title, year/make/model, price, odometer
-- Витяг: damage, title status, location, sale date
+#### 1. ПАРСИНГ STAT.VIN (основне джерело)
+**Покращений метод**: `extractStatVinData()`
+- Мультимовна підтримка (парсинг за значеннями, не за лейблами)
+- Парсинг всіх цін на сторінці ($)
+- Пошук damage types за ключовими словами
+- Пошук title status за ключовими словами
+- Пошук location за US city pattern
+- 17+ зображень з CDN
+
+#### 2. СПЕЦІАЛІЗОВАНИЙ ПАРСИНГ ДЛЯ COPART
+**Метод**: `extractCopartData()`
+- Lot number, title, year/make/model
+- Price, odometer, damage
+- Title status, location, sale date
 - Зображення з Copart CDN
-- Label-based extraction для технічних деталей
 
-#### 2. СПЕЦІАЛІЗОВАНИЙ ПАРСИНГ ДЛЯ IAAI
-**Новий метод**: `extractIAAIData()`
-- Stock # замість Lot # (IAAI specific)
+#### 3. СПЕЦІАЛІЗОВАНИЙ ПАРСИНГ ДЛЯ IAAI
+**Метод**: `extractIAAIData()`
+- Stock # (IAAI specific)
 - Loss Type для типу пошкодження
-- Branch Location для локації
-- Title/Sale Doc для статусу документів
-- Підтримка IAAI image gallery
+- Branch Location
+- Title/Sale Doc
+- IAAI image gallery
 
-#### 3. ПОКРАЩЕНА ВАЛІДАЦІЯ VIN (P0)
-- Строга перевірка VIN на сторінці
-- Reject якщо VIN не збігається
-- Confidence calculation на основі отриманих даних
+#### 4. ПОКРАЩЕНА MERGE ЛОГІКА
+- StatVin тепер включено в auction sources
+- Використовується auctionSource поле для визначення джерела
+- retailValue тепер передається як buyNowPrice
 
-#### 4. STAT.VIN ПАРСИНГ (вже працює)
-- Спеціальний метод extractStatVinData()
-- Парсинг ціни, пробігу, зображень
-- Визначення джерела (Copart/IAAI)
+## Тестування VIN: 5NPLS4AGXMH020498
+
+**Результат API:**
+```json
+{
+  "status": "FOUND",
+  "vehicle": {
+    "year": 2021,
+    "make": "Hyundai",
+    "model": "ELANTRA"
+  },
+  "auction": {
+    "found": true,
+    "source": "IAAI",
+    "currentBid": 1700,
+    "buyNowPrice": 13313,
+    "damageType": "Side",
+    "secondaryDamage": "Suspension",
+    "odometer": 78360,
+    "titleStatus": "Non-Repairable (Florida)",
+    "location": "West Palm Beach (FL)",
+    "images": 17
+  }
+}
+```
 
 ## Architecture
 
@@ -50,16 +79,16 @@ Smart Orchestrator (tiered execution)
 │  2. Find LOT PAGE link             │
 │  3. Navigate to LOT PAGE           │
 │  4. Domain-specific extraction:    │
-│     - extractCopartData()  ← NEW   │
-│     - extractIAAIData()    ← NEW   │
-│     - extractStatVinData()         │
+│     - extractStatVinData()  ← MAIN │
+│     - extractCopartData()          │
+│     - extractIAAIData()            │
 │     - extractVehicleData() (generic)│
 │  5. P0 VIN validation              │
 └─────────────────────────────────────┘
     ↓
-FALLBACK ENGINE (if CORE fails)
+MERGE SERVICE (combine results)
     ↓
-Merge + Score → Response
+Response
 ```
 
 ## Technology Stack
@@ -68,53 +97,12 @@ Merge + Score → Response
 - **Database**: MongoDB
 - **Frontend**: React + Tailwind CSS
 
-## Test Results (2026-04-05)
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| LocalDecoder | ✅ 100% | VIN decoding works |
-| Chromium Browser | ✅ Working | /usr/bin/chromium |
-| Copart Parsing | ✅ Ready | extractCopartData() |
-| IAAI Parsing | ✅ Ready | extractIAAIData() |
-| StatVin Parsing | ✅ Working | Successfully extracts data |
-| MongoDB | ✅ Working | Cache enabled |
-| UI | ✅ Working | VinCheckPage displays results |
-
-## API Response Structure
-
-```json
-{
-  "success": true,
-  "vin": "5YJSA1DN2CFP09123",
-  "status": "FOUND",
-  "vehicle": {
-    "year": 2012,
-    "make": "Tesla",
-    "model": "Model S"
-  },
-  "auction": {
-    "found": true,
-    "source": "Copart",
-    "lotNumber": "79251445",
-    "currentBid": 13916,
-    "odometer": 82000,
-    "damageType": "Front End",
-    "titleStatus": "Clean Title"
-  }
-}
-```
-
 ## Next Steps (Backlog)
 
-### P0 (Critical)
-- [x] Copart specific parsing
-- [x] IAAI specific parsing
-- [x] VIN validation
-
 ### P1 (High Priority)
-- [ ] Test with real auction VINs
-- [ ] Add loading UX ("Searching Copart...", "Searching IAAI...")
-- [ ] Residential proxy for Cloudflare bypass
+- [ ] Lot number extraction (потребує lot URL)
+- [ ] Proxy rotation для обходу geo-блокування
+- [ ] Loading UX ("Searching Copart...", "Searching IAAI...")
 
 ### P2 (Medium)
 - [ ] Batch VIN processing
@@ -122,6 +110,6 @@ Merge + Score → Response
 - [ ] Email notifications
 
 ### P3 (Low/Future)
+- [ ] Direct Copart/IAAI scraping (потребує auth)
 - [ ] Monetization (pay-per-check)
 - [ ] Subscription model
-- [ ] API access for partners

@@ -93,9 +93,12 @@ export class VinMergeService {
    * Build Layer 2: Auction (marketplace data)
    */
   private buildAuctionLayer(vehicles: ExtractedVehicle[]): AuctionLayerDto {
-    // Prioritize Tier 1 auction sources
+    // Prioritize Tier 1 auction sources and StatVin (which aggregates auction data)
+    const directAuctions = ['IAAI', 'Copart', 'AutoBidMaster', 'SalvageReseller'];
     const auctionSources = vehicles.filter(v =>
-      ['IAAI', 'Copart', 'AutoBidMaster', 'SalvageReseller'].includes(v.source)
+      directAuctions.includes(v.source) || 
+      v.source === 'StatVin' || // StatVin aggregates auction data
+      v.auctionSource // Has auction source info
     );
 
     if (auctionSources.length === 0) {
@@ -125,6 +128,9 @@ export class VinMergeService {
     const allImages = this.mergeImages(auctionSources);
     const price = this.weightedPrice(auctionSources);
 
+    // Determine auction source name - prefer auctionSource if available
+    const auctionSourceName = primary.auctionSource || primary.source;
+
     // Determine status
     let status: AuctionLayerDto['status'] = null;
     if (primary.saleDate) {
@@ -136,14 +142,14 @@ export class VinMergeService {
 
     return {
       found: true,
-      source: primary.source,
+      source: auctionSourceName,
       lotNumber: primary.lotNumber || null,
       status,
       saleDate: primary.saleDate || null,
       location: this.cleanLocation(primary.location),
       currentBid: price,
-      buyNowPrice: null,
-      estimatedValue: price ? Math.round(price * 1.4) : null,
+      buyNowPrice: primary.retailValue || null,
+      estimatedValue: primary.retailValue || (price ? Math.round(price * 1.4) : null),
       damageType: primary.damageType || primary.primaryDamage || null,
       primaryDamage: primary.primaryDamage,
       secondaryDamage: primary.secondaryDamage,
@@ -154,7 +160,7 @@ export class VinMergeService {
       images: allImages,
       auctionUrl: primary.sourceUrl,
       confidence,
-      allSources: [...new Set(auctionSources.map(v => v.source))],
+      allSources: [...new Set(auctionSources.map(v => v.auctionSource || v.source))],
     };
   }
 

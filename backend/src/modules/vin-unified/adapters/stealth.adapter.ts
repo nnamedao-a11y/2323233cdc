@@ -949,93 +949,241 @@ export class StealthAdapter implements OnModuleDestroy {
   ): Promise<ExtractedVehicle | null> {
     this.logger.log(`[Stealth] Using StatVin special extraction for ${vin}`);
     
-    // First get the raw body text for debugging
-    const bodyText = await page.evaluate(() => document.body.innerText || '');
+    // Wait for content to load fully
+    await new Promise(r => setTimeout(r, 3000));
     
-    // Check if VIN exists
-    if (!bodyText.toUpperCase().includes(vin.toUpperCase())) {
+    // Set English locale via cookie before reload
+    await page.setCookie({
+      name: 'locale',
+      value: 'en',
+      domain: 'stat.vin',
+      path: '/',
+    });
+    
+    // Also set language cookie
+    await page.setCookie({
+      name: 'language',
+      value: 'en',
+      domain: 'stat.vin',
+      path: '/',
+    });
+    
+    // Reload page with cookies set
+    await page.reload({ waitUntil: 'networkidle0', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 2000));
+    
+    // Try to wait for specific elements
+    try {
+      await page.waitForSelector('h1', { timeout: 5000 });
+    } catch (e) {
+      // Continue anyway
+    }
+    
+    const data = await page.evaluate((targetVin: string) => {
+      // Get text from body - try multiple methods
+      let bodyText = document.body.innerText || document.body.textContent || '';
+      
+      // Also try to get text from specific containers
+      const mainContent = document.querySelector('main') || document.querySelector('.container') || document.body;
+      const containerText = mainContent.innerText || mainContent.textContent || '';
+      if (containerText.length > bodyText.length) {
+        bodyText = containerText;
+      }
+      
+      // Check VIN exists
+      if (!bodyText.toUpperCase().includes(targetVin.toUpperCase())) {
+        return null;
+      }
+      
+      // Title from H1
+      const h1 = document.querySelector('h1');
+      const title = h1?.textContent?.trim() || null;
+      
+      // Parse title for year/make/model - "HYUNDAI ELANTRA 2021 SEL..."
+      let year: number | null = null;
+      let make: string | null = null;
+      let model: string | null = null;
+      
+      if (title) {
+        const match1 = title.match(/([A-Z]+)\s+([A-Z0-9]+(?:\s+[A-Z0-9]+)?)\s+(20[0-2]\d|19[89]\d)/i);
+        if (match1) {
+          make = match1[1].toUpperCase();
+          model = match1[2].trim();
+          year = parseInt(match1[3], 10);
+        }
+      }
+      
+      // Auction source from badges
+      let auctionName: string | null = null;
+      if (bodyText.toUpperCase().includes('IAAI')) auctionName = 'IAAI';
+      else if (bodyText.toUpperCase().includes('COPART')) auctionName = 'Copart';
+      
+      // Lot number - look for 7-8 digit numbers
+      let lotNumber: string | null = null;
+      // Look near VIN
+      const vinIdx = bodyText.toUpperCase().indexOf(targetVin.toUpperCase());
+      if (vinIdx > -1) {
+        // Search in area around VIN for lot number
+        const nearVin = bodyText.substring(Math.max(0, vinIdx - 200), vinIdx + 300);
+        const lotMatch = nearVin.match(/\b(\d{7,8})\b/);
+        if (lotMatch) lotNumber = lotMatch[1];
+      }
+      
+      // Price - look for $ followed by numbers
+      let price: number | null = null;
+      let buyNowPrice: number | null = null;
+      let retailValue: number | null = null;
+      
+      // Find all prices on page
+      const allPrices: number[] = [];
+      const priceRegex = /\$\s*([\d,\s]+(?:\.\d{2})?)/g;
+      let priceMatch;
+      while ((priceMatch = priceRegex.exec(bodyText)) !== null) {
+        const val = parseFloat(priceMatch[1].replace(/[\s,]/g, ''));
+        if (val > 0 && val < 500000) {
+          allPrices.push(val);
+        }
+      }
+      
+      // First small price is current bid, larger prices are buy now/retail
+      if (allPrices.length > 0) {
+        const sorted = [...allPrices].sort((a, b) => a - b);
+        price = sorted[0]; // Smallest is current bid
+        if (sorted.length > 1 && sorted[sorted.length - 1] > 1000) {
+          retailValue = sorted[sorted.length - 1]; // Largest is retail value
+        }
+        if (sorted.length > 2) {
+          buyNowPrice = sorted[1]; // Second is buy now
+        }
+      }
+      
+      // Mileage - look for number followed by "mi"
+      let mileage: number | null = null;
+      const mileageMatch = bodyText.match(/(\d[\d,\s]*)\s*mi\b/i);
+      if (mileageMatch) {
+        mileage = parseInt(mileageMatch[1].replace(/[\s,]/g, ''), 10);
+      }
+      
+      // Damage - look for common damage types
+      let damageType: string | null = null;
+      const damageTypes = ['Front End', 'Rear End', 'Side', 'Right Side', 'Left Side', 'Rollover', 'All Over', 
+                          'Flood', 'Fire', 'Vandalism', 'Mechanical', 'Hail', 'Theft', 'Water', 'Storm'];
+      for (const dt of damageTypes) {
+        if (bodyText.includes(dt)) {
+          damageType = dt;
+          break;
+        }
+      }
+      
+      // Secondary damage
+      let secondaryDamage: string | null = null;
+      const secondaryTypes = ['Suspension', 'Engine', 'Transmission', 'Frame', 'Airbags', 'Undercarriage'];
+      for (const st of secondaryTypes) {
+        if (bodyText.includes(st) && st !== damageType) {
+          secondaryDamage = st;
+          break;
+        }
+      }
+      
+      // Title status - look for common statuses
+      let titleStatus: string | null = null;
+      const titleTypes = ['Non-Repairable', 'Salvage', 'Clean Title', 'Rebuilt', 'Certificate of Destruction', 
+                         'Junk', 'Parts Only', 'Bill of Sale'];
+      for (const tt of titleTypes) {
+        if (bodyText.includes(tt)) {
+          titleStatus = tt;
+          // Try to get state from parentheses
+          const stateMatch = bodyText.match(new RegExp(tt + '\\s*\\(([A-Za-z\\s]+)\\)'));
+          if (stateMatch) {
+            titleStatus = `${tt} (${stateMatch[1]})`;
+          }
+          break;
+        }
+      }
+      
+      // Location - look for US city pattern
+      let location: string | null = null;
+      const cityMatch = bodyText.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(([A-Z]{2})\)/);
+      if (cityMatch) {
+        location = `${cityMatch[1]} (${cityMatch[2]})`;
+      }
+      
+      // Images
+      const images: string[] = [];
+      document.querySelectorAll('img[src*="stat.vin"], img[src*="cdn"]').forEach(img => {
+        const src = (img as HTMLImageElement).src || '';
+        if (src.length > 50 && !src.includes('logo') && !src.includes('icon') && !src.includes('no-photo')) {
+          images.push(src);
+        }
+      });
+      
+      return {
+        title,
+        year,
+        make,
+        model,
+        price,
+        buyNowPrice,
+        retailValue,
+        auctionName,
+        lotNumber,
+        mileage,
+        damageType,
+        secondaryDamage,
+        titleStatus,
+        location,
+        seller: null,
+        engine: null,
+        fuel: null,
+        transmission: null,
+        drive: null,
+        keys: null,
+        images: images.slice(0, 20),
+        // Debug info
+        _debug: {
+          bodyTextLength: bodyText.length,
+          hasBidInfo: bodyText.includes('Bid') || bodyText.includes('$'),
+          hasLotNumber: lotNumber !== null,
+          pricesFound: allPrices.length,
+          textSample: bodyText.substring(0, 500),
+        }
+      };
+    }, vin);
+    
+    if (!data) {
       this.logger.warn(`[Stealth] StatVin: VIN not found on page`);
       return null;
     }
     
-    // Extract title from H1
-    const title = await page.evaluate(() => {
-      const h1 = document.querySelector('h1');
-      return h1?.textContent?.trim() || null;
-    });
-    
-    // Parse title for year/make/model
-    let year: number | null = null;
-    let make: string | null = null;
-    let model: string | null = null;
-    
-    if (title) {
-      const match = title.match(/^([A-Z]+)\s+([A-Z0-9]+(?:\s+[A-Z0-9]+)?)\s+(20[0-2]\d|19[89]\d)/i);
-      if (match) {
-        make = match[1].toUpperCase();
-        model = match[2].trim();
-        year = parseInt(match[3], 10);
-      }
-    }
-    
-    // Extract price - find first $ after "Current Bid"
-    let price: number | null = null;
-    const bidIdx = bodyText.indexOf('Current Bid');
-    if (bidIdx > -1) {
-      const after = bodyText.substring(bidIdx, bidIdx + 100);
-      const priceMatch = after.match(/\$([\d,]+(?:\.\d{2})?)/);
-      if (priceMatch) {
-        price = parseFloat(priceMatch[1].replace(/,/g, ''));
-        this.logger.debug(`[Stealth] StatVin price found: $${price}`);
-      }
-    }
-    
-    // Extract Buy Now price
-    let buyNowPrice: number | null = null;
-    const buyIdx = bodyText.toLowerCase().indexOf('buy');
-    if (buyIdx > -1) {
-      const after = bodyText.substring(buyIdx, buyIdx + 80);
-      const match = after.match(/\$([\d,]+)/);
-      if (match) {
-        const val = parseInt(match[1].replace(/,/g, ''), 10);
-        if (val > 100) buyNowPrice = val;
-      }
-    }
-    
-    // Auction source
-    let auctionName: string | null = null;
-    if (bodyText.includes('IAAI')) auctionName = 'IAAI';
-    else if (bodyText.includes('Copart')) auctionName = 'Copart';
-    
-    // Mileage - look for pattern like "78 360 mi"
-    let mileage: number | null = null;
-    const mileageMatch = bodyText.match(/(\d[\d\s,]*\d)\s*(?:mi|km|miles)/i);
-    if (mileageMatch) {
-      mileage = parseInt(mileageMatch[1].replace(/[\s,]/g, ''), 10);
-    }
-    
-    // Images
-    const images = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('img'))
-        .map(img => img.src || img.getAttribute('data-src') || '')
-        .filter(src => src.length > 50 && !src.includes('logo') && !src.includes('icon'))
-        .slice(0, 20);
-    });
-    
     this.logger.log(
-      `[Stealth] StatVin: vin=${vin}, year=${year}, make=${make}, model=${model}, price=${price}, buyNow=${buyNowPrice}, mileage=${mileage}, images=${images.length}`
+      `[Stealth] StatVin: vin=${vin}, year=${data.year}, make=${data.make}, model=${data.model}, ` +
+      `price=${data.price}, buyNow=${data.buyNowPrice}, retail=${data.retailValue}, ` +
+      `lot=${data.lotNumber}, mileage=${data.mileage}, damage=${data.damageType}, ` +
+      `auction=${data.auctionName}, images=${data.images.length}`
     );
 
     return {
       vin: vin.toUpperCase(),
-      title: title || `${year || ''} ${make || ''} ${model || ''}`.trim() || undefined,
-      year: year || undefined,
-      make: make || undefined,
-      model: model || undefined,
-      price: price || buyNowPrice || undefined,
-      images: images || [],
-      mileage: mileage || undefined,
+      title: data.title || `${data.year || ''} ${data.make || ''} ${data.model || ''}`.trim() || undefined,
+      year: data.year || undefined,
+      make: data.make || undefined,
+      model: data.model || undefined,
+      lotNumber: data.lotNumber || undefined,
+      price: data.price || data.buyNowPrice || undefined,
+      retailValue: data.retailValue || undefined,
+      images: data.images || [],
+      mileage: data.mileage || undefined,
       odometerUnit: 'mi',
+      damageType: data.damageType || undefined,
+      secondaryDamage: data.secondaryDamage || undefined,
+      titleStatus: data.titleStatus || undefined,
+      location: data.location || undefined,
+      seller: data.seller || undefined,
+      engine: data.engine || undefined,
+      fuel: data.fuel || undefined,
+      transmission: data.transmission || undefined,
+      drive: data.drive || undefined,
+      auctionSource: data.auctionName || undefined,
       source: source.name,
       sourceUrl: source.url,
       sourceTier: source.tier,

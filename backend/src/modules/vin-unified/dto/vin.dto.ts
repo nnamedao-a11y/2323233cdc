@@ -230,6 +230,7 @@ export interface ExtractedVehicle {
   location?: string;
   saleDate?: Date;
   price?: number;
+  retailValue?: number;
   images: string[];
   damageType?: string;
   primaryDamage?: string;
@@ -247,6 +248,7 @@ export interface ExtractedVehicle {
   seller?: string;
   engine?: string;
   color?: string;
+  auctionSource?: string; // Copart, IAAI, etc.
   source: string;
   sourceUrl: string;
   sourceTier: SourceTier;
