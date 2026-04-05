@@ -97,6 +97,12 @@ export class HealthAwareTierFactory {
     const tier3Sources = ['BidFax', 'Poctra', 'VehicleHistory']
       .map(name => byName.get(name))
       .filter(s => s && !this.isHardDegraded(s.name)) as DiscoveredSource[];
+    
+    // Add BidMotors to tier 2 (secondary) as it has reliable data and no Cloudflare
+    const bidMotors = byName.get('BidMotors');
+    if (bidMotors && !this.isHardDegraded('BidMotors')) {
+      tier2Sources.push(bidMotors);
+    }
 
     if (tier3Sources.length > 0) {
       tiers.push({

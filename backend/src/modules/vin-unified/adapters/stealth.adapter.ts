@@ -940,6 +940,235 @@ export class StealthAdapter implements OnModuleDestroy {
   }
 
   /**
+   * Special extraction for BidMotors.bg - competitor site with Copart/IAAI data
+   * No Cloudflare protection - easy to scrape
+   */
+  private async extractBidMotorsData(
+    page: Page,
+    vin: string,
+    source: DiscoveredSource,
+  ): Promise<ExtractedVehicle | null> {
+    this.logger.log(`[Stealth] Using BidMotors competitor extraction for ${vin}`);
+    
+    // BidMotors uses URL format: /make-model-year-vin
+    // First, navigate to search page with VIN
+    const searchUrl = `https://bidmotors.bg/catalogue?q=${vin}`;
+    this.logger.log(`[Stealth] BidMotors: Navigating to search: ${searchUrl}`);
+    
+    try {
+      await page.goto(searchUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+      await new Promise(r => setTimeout(r, 3000));
+      
+      // Look for link containing VIN in the search results
+      const vehicleLink = await page.evaluate((targetVin: string) => {
+        const allLinks = Array.from(document.querySelectorAll('a'));
+        for (const link of allLinks) {
+          const href = (link as HTMLAnchorElement).href || '';
+          // BidMotors URLs end with VIN: /make-model-year-VIN
+          if (href.toLowerCase().includes(targetVin.toLowerCase())) {
+            return href;
+          }
+        }
+        return null;
+      }, vin);
+      
+      if (vehicleLink) {
+        this.logger.log(`[Stealth] BidMotors: Found vehicle link: ${vehicleLink}`);
+        await page.goto(vehicleLink, { waitUntil: 'networkidle0', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 2000));
+      } else {
+        this.logger.warn(`[Stealth] BidMotors: No vehicle link found for ${vin}`);
+        return null;
+      }
+    } catch (e) {
+      this.logger.error(`[Stealth] BidMotors navigation error: ${e}`);
+      return null;
+    }
+    
+    // Now extract data from vehicle detail page
+    const data = await page.evaluate((targetVin: string) => {
+      const bodyText = document.body.innerText || '';
+      const html = document.body.innerHTML || '';
+      
+      // Title from h1
+      const h1 = document.querySelector('h1');
+      let title = h1?.textContent?.trim() || null;
+      
+      // Parse title - format: "2021 Audi Q7 Premium Plus"
+      let year: number | null = null;
+      let make: string | null = null;
+      let model: string | null = null;
+      
+      if (title) {
+        const match = title.match(/(20[0-2]\d|19[89]\d)\s+([A-Za-z]+)\s+(.+)/);
+        if (match) {
+          year = parseInt(match[1], 10);
+          make = match[2].toUpperCase();
+          model = match[3].trim();
+        }
+      }
+      
+      // Helper to find value after Bulgarian/English label
+      const findValue = (labels: string[]): string | null => {
+        for (const label of labels) {
+          // Look for "Label:Value" or "Label: Value" pattern
+          const patterns = [
+            new RegExp(label + '[:\\s]+([^\\n]+)', 'i'),
+          ];
+          for (const pattern of patterns) {
+            const match = bodyText.match(pattern);
+            if (match && match[1]) {
+              const val = match[1].trim();
+              if (val && val.length > 0 && val.length < 150) return val;
+            }
+          }
+        }
+        return null;
+      };
+      
+      // Lot number - "Търг №:" format
+      let lotNumber: string | null = null;
+      const lotMatch = bodyText.match(/Търг\s*№?\s*:?\s*(\d{7,10})/i) ||
+                       bodyText.match(/Lot\s*#?\s*:?\s*(\d{7,10})/i);
+      if (lotMatch) lotNumber = lotMatch[1];
+      
+      // Price - look for $ amount
+      let price: number | null = null;
+      const priceMatch = bodyText.match(/\$\s*([\d,]+)\s*USD/i) ||
+                         bodyText.match(/\$\s*([\d,]+)/);
+      if (priceMatch) {
+        price = parseInt(priceMatch[1].replace(/,/g, ''), 10);
+      }
+      
+      // Auction date - "Дата на търга:" format
+      const auctionDate = findValue(['Дата на търга', 'Auction Date', 'Sale Date']);
+      
+      // Odometer - "Пробег" in km
+      let mileage: number | null = null;
+      const odomMatch = bodyText.match(/Пробег\s*:?\s*([\d\s]+)\s*km/i) ||
+                        bodyText.match(/(\d[\d\s]+)\s*km/i);
+      if (odomMatch) {
+        mileage = parseInt(odomMatch[1].replace(/\s/g, ''), 10);
+      }
+      
+      // Damage - "Щета:" format (Bulgarian)
+      const damageType = findValue(['Щета', 'Damage', 'Primary Damage']);
+      
+      // Condition - "Състояние:" format
+      const condition = findValue(['Състояние', 'Condition']);
+      
+      // Keys - "Ключове:" format
+      const keys = findValue(['Ключове', 'Keys']);
+      
+      // Engine
+      const engine = findValue(['Двигател', 'Engine']);
+      
+      // Transmission - "Скоростна кутия:"
+      const transmission = findValue(['Скоростна кутия', 'Transmission']);
+      
+      // Fuel - "Вид гориво:"
+      const fuel = findValue(['Вид гориво', 'Fuel']);
+      
+      // Drive - "Задвижване:"
+      const drive = findValue(['Задвижване', 'Drive']);
+      
+      // Location - "Локация:"
+      const location = findValue(['Локация', 'Location']);
+      
+      // Title/Documents
+      const titleStatus = findValue(['Документи за продажба', 'Title', 'Sale Document']);
+      
+      // Seller
+      const seller = findValue(['Продавач', 'Seller']);
+      
+      // Auction source - detect from badges/images
+      let auctionSource: string | null = null;
+      if (html.includes('copart') || bodyText.includes('Copart')) {
+        auctionSource = 'Copart';
+      } else if (html.includes('iaai') || bodyText.includes('IAAI')) {
+        auctionSource = 'IAAI';
+      }
+      
+      // Images - from Copart/IAAI CDN
+      const images: string[] = [];
+      document.querySelectorAll('img[src*="copart"], img[src*="iaai"], img[src*="cs.copart"], img[src*="vis.iaai"]').forEach(img => {
+        const src = (img as HTMLImageElement).src || '';
+        if (src.length > 50 && !src.includes('logo') && !src.includes('icon')) {
+          images.push(src);
+        }
+      });
+      // Also check for any large images
+      document.querySelectorAll('img[src*="hrs.jpg"], img[src*="resizer"]').forEach(img => {
+        const src = (img as HTMLImageElement).src || '';
+        if (src.length > 50 && !images.includes(src)) {
+          images.push(src);
+        }
+      });
+      
+      return {
+        title,
+        year,
+        make,
+        model,
+        lotNumber,
+        price,
+        auctionDate,
+        mileage,
+        damageType,
+        condition,
+        keys,
+        engine,
+        transmission,
+        fuel,
+        drive,
+        location,
+        titleStatus,
+        seller,
+        auctionSource,
+        images: images.slice(0, 20),
+      };
+    }, vin);
+    
+    if (!data) {
+      this.logger.warn(`[Stealth] BidMotors: VIN not found on page`);
+      return null;
+    }
+    
+    this.logger.log(
+      `[Stealth] BidMotors: vin=${vin}, year=${data.year}, make=${data.make}, model=${data.model}, ` +
+      `price=${data.price}, lot=${data.lotNumber}, mileage=${data.mileage}, damage=${data.damageType}, ` +
+      `auction=${data.auctionSource}, images=${data.images.length}`
+    );
+    
+    return {
+      vin: vin.toUpperCase(),
+      title: data.title || `${data.year || ''} ${data.make || ''} ${data.model || ''}`.trim() || undefined,
+      year: data.year || undefined,
+      make: data.make || undefined,
+      model: data.model || undefined,
+      lotNumber: data.lotNumber || undefined,
+      price: data.price || undefined,
+      images: data.images || [],
+      mileage: data.mileage || undefined,
+      odometerUnit: 'km',  // BidMotors uses km
+      damageType: data.damageType || undefined,
+      titleStatus: data.titleStatus || undefined,
+      location: data.location || undefined,
+      fuel: data.fuel || undefined,
+      transmission: data.transmission || undefined,
+      drive: data.drive || undefined,
+      engine: data.engine || undefined,
+      auctionSource: data.auctionSource || undefined,
+      source: source.name,
+      sourceUrl: source.url,
+      sourceTier: source.tier,
+      confidence: 0.85,
+      extractedAt: new Date(),
+      responseTime: 0,
+    };
+  }
+
+  /**
    * Special extraction for stat.vin - they have excellent structured data
    */
   private async extractStatVinData(
@@ -1214,6 +1443,11 @@ export class StealthAdapter implements OnModuleDestroy {
     // Special extraction for IAAI
     if (source.domain === 'iaai.com') {
       return this.extractIAAIData(page, vin, source);
+    }
+    
+    // Special extraction for BidMotors (competitor)
+    if (source.domain === 'bidmotors.bg') {
+      return this.extractBidMotorsData(page, vin, source);
     }
     
     const data = await page.evaluate((targetVin) => {

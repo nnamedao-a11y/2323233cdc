@@ -134,6 +134,19 @@ const SOURCES: DiscoveredSource[] = [
     trustScore: 0.58,
     rateLimit: { requestsPerMinute: 5 },
   },
+  
+  // ========== TIER 3: COMPETITORS (no Cloudflare) ==========
+  {
+    name: 'BidMotors',
+    domain: 'bidmotors.bg',
+    // Direct catalogue page - adapter will handle VIN search
+    url: 'https://bidmotors.bg/catalogue',
+    type: 'competitor',
+    tier: 3,
+    priority: 75,
+    trustScore: 0.85,
+    rateLimit: { requestsPerMinute: 10 },
+  },
 ];
 
 @Injectable()

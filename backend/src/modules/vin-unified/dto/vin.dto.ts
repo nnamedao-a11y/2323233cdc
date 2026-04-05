@@ -16,7 +16,7 @@ export type VehicleStatus = 'NOT_FOUND' | 'PARTIAL' | 'FOUND' | 'AUCTION_ACTIVE'
 export type DealScore = 'GOOD' | 'FAIR' | 'RISK' | 'BAD';
 
 // ============ SOURCE TYPES (SCRAPING ONLY - NO API) ============
-export type SourceType = 'json' | 'html_light' | 'html_heavy' | 'stealth';
+export type SourceType = 'json' | 'html_light' | 'html_heavy' | 'stealth' | 'competitor';
 export type SourceTier = 1 | 2 | 3;
 
 // ============ FALLBACK MODE ============

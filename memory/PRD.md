@@ -1,94 +1,80 @@
-# BIBI Cars VIN Parser - PRD v10 (PRODUCTION)
+# BIBI Cars VIN Parser - PRD v11 (PRODUCTION)
 
 ## Original Problem Statement
-Клонувати репозиторій, вивчити архітектуру VIN парсингу та завершити логіку парсингу для Copart та IAAI.
+Клонувати репозиторій, вивчити архітектуру VIN парсингу, завершити логіку парсингу для Copart/IAAI, додати конкурентів як джерела.
 
 ## ✅ СТАТУС: ГОТОВО - 2026-04-05
 
 ### Що реалізовано:
 
 #### 1. ПАРСИНГ STAT.VIN (основне джерело)
-**Покращений метод**: `extractStatVinData()`
 - Мультимовна підтримка (парсинг за значеннями, не за лейблами)
-- Парсинг всіх цін на сторінці ($)
-- Пошук damage types за ключовими словами
-- Пошук title status за ключовими словами
-- Пошук location за US city pattern
+- Парсинг всіх цін, damage types, title status
 - 17+ зображень з CDN
 
-#### 2. СПЕЦІАЛІЗОВАНИЙ ПАРСИНГ ДЛЯ COPART
-**Метод**: `extractCopartData()`
-- Lot number, title, year/make/model
-- Price, odometer, damage
-- Title status, location, sale date
-- Зображення з Copart CDN
+#### 2. COPART/IAAI ПАРСИНГ  
+- Спеціалізовані методи extractCopartData(), extractIAAIData()
+- Puppeteer + Stealth для обходу Cloudflare
 
-#### 3. СПЕЦІАЛІЗОВАНИЙ ПАРСИНГ ДЛЯ IAAI
-**Метод**: `extractIAAIData()`
-- Stock # (IAAI specific)
-- Loss Type для типу пошкодження
-- Branch Location
-- Title/Sale Doc
-- IAAI image gallery
+#### 3. BIDMOTORS.BG (НОВИЙ КОНКУРЕНТ)
+**Метод**: `extractBidMotorsData()`
+- Пошук через каталог: `/catalogue?q={VIN}`
+- Перехід на сторінку авто з VIN в URL
+- Парсинг болгарською: Търг №, Щета, Пробег, Състояние
+- Визначення auction source (Copart/IAAI) з images
+- Ціни в USD/EUR
+- Без Cloudflare - швидкий парсинг
 
-#### 4. ПОКРАЩЕНА MERGE ЛОГІКА
-- StatVin тепер включено в auction sources
-- Використовується auctionSource поле для визначення джерела
-- retailValue тепер передається як buyNowPrice
-
-## Тестування VIN: 5NPLS4AGXMH020498
-
-**Результат API:**
-```json
-{
-  "status": "FOUND",
-  "vehicle": {
-    "year": 2021,
-    "make": "Hyundai",
-    "model": "ELANTRA"
-  },
-  "auction": {
-    "found": true,
-    "source": "IAAI",
-    "currentBid": 1700,
-    "buyNowPrice": 13313,
-    "damageType": "Side",
-    "secondaryDamage": "Suspension",
-    "odometer": 78360,
-    "titleStatus": "Non-Repairable (Florida)",
-    "location": "West Palm Beach (FL)",
-    "images": 17
-  }
-}
-```
-
-## Architecture
+#### 4. АРХІТЕКТУРА ТІЄРІВ
 
 ```
-VIN Request
-    ↓
-Cache Check
-    ↓
-LocalDecoder (VIN → Year/Make/Model)
-    ↓
-Smart Orchestrator (tiered execution)
-    ↓
-┌─────────────────────────────────────┐
-│ STEALTH ADAPTER (per source)       │
-│  1. Navigate to SEARCH page        │
-│  2. Find LOT PAGE link             │
-│  3. Navigate to LOT PAGE           │
-│  4. Domain-specific extraction:    │
-│     - extractStatVinData()  ← MAIN │
-│     - extractCopartData()          │
-│     - extractIAAIData()            │
-│     - extractVehicleData() (generic)│
-│  5. P0 VIN validation              │
-└─────────────────────────────────────┘
-    ↓
-MERGE SERVICE (combine results)
-    ↓
-Response
+Tier 1 (0ms delay):
+  - LocalDecoder
+  - Copart
+  - IAAI  
+  - CopartDirect
+
+Tier 2 (9s delay):
+  - StatVin
+  - AutoBidMaster
+  - SalvageReseller
+  - BidMotors ← NEW (competitor)
+
+Tier 3 (22.5s delay):
+  - BidFax
+  - Poctra
+  - VehicleHistory
+```
+
+## Тестування
+
+### VIN: 5FRYD7H73HB001950 (2017 Acura MDX)
+```
+Status: FOUND
+Vehicle: 2017 MDX SPORT HYBRID
+Auction: IAAI
+Price: $6,600
+Odometer: 82,828 km
+```
+
+### VIN: WA1LXAF71MD017482 (2021 Audi Q7)
+```
+Status: FOUND  
+Vehicle: 2021 Audi Q7
+Auction: IAAI
+Price: $6,975
+Odometer: 117,673 km
+Images: 14
+```
+
+### VIN: 5NPLS4AGXMH020498 (2021 Hyundai Elantra)
+```
+Status: FOUND
+Auction: IAAI
+Price: $1,700
+Odometer: 78,360 mi
+Damage: Side + Suspension
+Title: Non-Repairable (Florida)
 ```
 
 ## Technology Stack
@@ -97,19 +83,26 @@ Response
 - **Database**: MongoDB
 - **Frontend**: React + Tailwind CSS
 
+## Джерела-конкуренти (для масштабування)
+
+| Сайт | Тип | Cloudflare | Статус |
+|------|-----|------------|--------|
+| bidmotors.bg | competitor | No | ✅ Ready |
+| (наступні 50+) | competitor | TBD | Backlog |
+
 ## Next Steps (Backlog)
 
 ### P1 (High Priority)
-- [ ] Lot number extraction (потребує lot URL)
-- [ ] Proxy rotation для обходу geo-блокування
-- [ ] Loading UX ("Searching Copart...", "Searching IAAI...")
+- [ ] Додати більше конкурентів (за списком)
+- [ ] Lot number extraction з BidMotors
+- [ ] Proxy rotation для geo-блокування
 
 ### P2 (Medium)
 - [ ] Batch VIN processing
-- [ ] Historical price tracking
+- [ ] Моніторинг конкурентів (ціни, наявність)
 - [ ] Email notifications
 
 ### P3 (Low/Future)
-- [ ] Direct Copart/IAAI scraping (потребує auth)
-- [ ] Monetization (pay-per-check)
-- [ ] Subscription model
+- [ ] Direct Copart/IAAI scraping (auth)
+- [ ] Monetization
+- [ ] API access for partners

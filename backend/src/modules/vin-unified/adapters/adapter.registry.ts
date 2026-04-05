@@ -31,6 +31,7 @@ export class AdapterRegistry {
     this.register('html_light', htmlLight);
     this.register('html_heavy', htmlHeavy);
     this.register('stealth', stealthAdapter);
+    this.register('competitor', stealthAdapter);  // Competitors use same stealth adapter
 
     this.logger.log(`AdapterRegistry: ${this.adapters.size} adapters (Puppeteer Stealth for Cloudflare bypass)`);
   }
