@@ -508,6 +508,438 @@ export class StealthAdapter implements OnModuleDestroy {
   }
 
   /**
+   * Special extraction for Copart - structured lot page data
+   */
+  private async extractCopartData(
+    page: Page,
+    vin: string,
+    source: DiscoveredSource,
+  ): Promise<ExtractedVehicle | null> {
+    this.logger.log(`[Stealth] Using Copart special extraction for ${vin}`);
+    
+    const data = await page.evaluate((targetVin: string) => {
+      const bodyText = document.body.innerText || '';
+      const html = document.body.innerHTML || '';
+      
+      // VIN validation
+      const vinRegex = /\b([A-HJ-NPR-Z0-9]{17})\b/gi;
+      const vinMatches: string[] = bodyText.match(vinRegex) || [];
+      const foundVin = vinMatches.find((v: string) => v.toUpperCase() === targetVin.toUpperCase()) || null;
+      
+      if (!foundVin) return null;
+      
+      // Lot number - Copart specific patterns
+      let lotNumber: string | null = null;
+      const lotMatch = bodyText.match(/Lot\s*#?\s*:?\s*(\d{7,9})/i) ||
+                       bodyText.match(/Stock\s*#?\s*:?\s*(\d+)/i) ||
+                       html.match(/data-lot[="](\d{7,9})/i);
+      if (lotMatch) lotNumber = lotMatch[1];
+      
+      // Title/Vehicle Name - look for H1 or specific selectors
+      let title: string | null = null;
+      const h1 = document.querySelector('h1');
+      if (h1) {
+        title = h1.textContent?.trim() || null;
+      }
+      
+      // Parse year/make/model from title
+      let year: number | null = null;
+      let make: string | null = null;
+      let model: string | null = null;
+      
+      if (title) {
+        const titleMatch = title.match(/^(\d{4})\s+([A-Z][A-Z\-]+)\s+(.+)/i);
+        if (titleMatch) {
+          year = parseInt(titleMatch[1], 10);
+          make = titleMatch[2].toUpperCase();
+          model = titleMatch[3].trim();
+        }
+      }
+      
+      // Helper to find label:value pairs
+      const findLabel = (labels: string[]): string | null => {
+        for (const label of labels) {
+          const patterns = [
+            new RegExp(label + '\\s*[:\\|]\\s*([^\\n\\|]+)', 'i'),
+            new RegExp('<[^>]*>' + label + '<\\/[^>]*>\\s*<[^>]*>([^<]+)', 'i'),
+          ];
+          for (const pattern of patterns) {
+            const match = bodyText.match(pattern) || html.match(pattern);
+            if (match && match[1]) {
+              const value = match[1].trim();
+              if (value && value.length < 100) return value;
+            }
+          }
+        }
+        return null;
+      };
+      
+      // Current Bid/Price
+      let price: number | null = null;
+      const priceText = findLabel(['Current Bid', 'High Bid', 'Buy It Now', 'Final Bid']);
+      if (priceText) {
+        const priceMatch = priceText.match(/\$?([\d,]+)/);
+        if (priceMatch) {
+          price = parseInt(priceMatch[1].replace(/,/g, ''), 10);
+        }
+      }
+      // Fallback - look for prominent price
+      if (!price) {
+        const bigPrice = bodyText.match(/\$\s*([\d,]+(?:\.\d{2})?)\s*(?:USD)?/);
+        if (bigPrice) {
+          const p = parseInt(bigPrice[1].replace(/,/g, ''), 10);
+          if (p > 100 && p < 500000) price = p;
+        }
+      }
+      
+      // Odometer
+      let mileage: number | null = null;
+      const odometerText = findLabel(['Odometer', 'Mileage', 'Miles']);
+      if (odometerText) {
+        const odomMatch = odometerText.match(/([\d,]+)\s*(mi|km|miles)?/i);
+        if (odomMatch) {
+          mileage = parseInt(odomMatch[1].replace(/,/g, ''), 10);
+        }
+      }
+      
+      // Damage
+      const primaryDamage = findLabel(['Primary Damage', 'Damage Type', 'Primary']);
+      const secondaryDamage = findLabel(['Secondary Damage', 'Secondary']);
+      
+      // Title Status
+      const titleStatus = findLabel(['Title', 'Title Code', 'Doc Type', 'Sale Title']);
+      
+      // Location
+      const location = findLabel(['Location', 'Yard', 'Sale Location', 'Branch']);
+      
+      // Sale Date
+      const saleDate = findLabel(['Sale Date', 'Auction Date', 'Sale Time']);
+      
+      // Additional details
+      const fuel = findLabel(['Fuel', 'Fuel Type', 'Engine Type']);
+      const transmission = findLabel(['Transmission', 'Trans']);
+      const drive = findLabel(['Drive', 'Drive Type', 'Drivetrain']);
+      const color = findLabel(['Color', 'Exterior Color', 'Ext Color']);
+      const engine = findLabel(['Engine', 'Engine Size', 'Cylinders']);
+      const bodyStyle = findLabel(['Body Style', 'Body Type', 'Vehicle Type']);
+      const keys = findLabel(['Keys', 'Key Present']);
+      const seller = findLabel(['Seller', 'Seller Type']);
+      
+      // Images - Copart specific
+      const images: string[] = [];
+      document.querySelectorAll('img[src*="cs.copart"], img[src*="cloudfront"], img[data-src*="lot"]').forEach(img => {
+        const src = (img as HTMLImageElement).src || img.getAttribute('data-src') || '';
+        if (src && src.length > 30 && !src.includes('logo') && !src.includes('icon')) {
+          images.push(src);
+        }
+      });
+      // Also check for carousel images
+      document.querySelectorAll('[class*="carousel"] img, [class*="gallery"] img, [class*="thumbnail"] img').forEach(img => {
+        const src = (img as HTMLImageElement).src || img.getAttribute('data-src') || '';
+        if (src && src.length > 30 && !images.includes(src)) {
+          images.push(src);
+        }
+      });
+      
+      return {
+        foundVin,
+        lotNumber,
+        title,
+        year,
+        make,
+        model,
+        price,
+        mileage,
+        primaryDamage,
+        secondaryDamage,
+        titleStatus,
+        location,
+        saleDate,
+        fuel,
+        transmission,
+        drive,
+        color,
+        engine,
+        bodyStyle,
+        keys,
+        seller,
+        images: images.slice(0, 20),
+      };
+    }, vin);
+    
+    if (!data || !data.foundVin) {
+      this.logger.warn(`[Stealth] Copart: VIN not found on page`);
+      return null;
+    }
+    
+    const confidence = this.calculateConfidence(data, vin);
+    
+    this.logger.log(
+      `[Stealth] Copart: lot=${data.lotNumber}, price=${data.price}, mileage=${data.mileage}, damage=${data.primaryDamage}, images=${data.images.length}`
+    );
+    
+    return {
+      vin: data.foundVin.toUpperCase(),
+      title: data.title || `${data.year || ''} ${data.make || ''} ${data.model || ''}`.trim() || undefined,
+      year: data.year || undefined,
+      make: data.make || undefined,
+      model: data.model || undefined,
+      lotNumber: data.lotNumber || undefined,
+      location: data.location || undefined,
+      price: data.price || undefined,
+      images: data.images || [],
+      damageType: data.primaryDamage || undefined,
+      secondaryDamage: data.secondaryDamage || undefined,
+      mileage: data.mileage || undefined,
+      odometerUnit: 'mi',
+      titleStatus: data.titleStatus || undefined,
+      fuel: data.fuel || undefined,
+      transmission: data.transmission || undefined,
+      drive: data.drive || undefined,
+      bodyStyle: data.bodyStyle || undefined,
+      seller: data.seller || undefined,
+      saleDate: data.saleDate ? new Date(data.saleDate) : undefined,
+      engine: data.engine || undefined,
+      color: data.color || undefined,
+      source: source.name,
+      sourceUrl: source.url,
+      sourceTier: source.tier,
+      confidence,
+      extractedAt: new Date(),
+      responseTime: 0,
+    };
+  }
+
+  /**
+   * Special extraction for IAAI - Insurance Auto Auctions
+   */
+  private async extractIAAIData(
+    page: Page,
+    vin: string,
+    source: DiscoveredSource,
+  ): Promise<ExtractedVehicle | null> {
+    this.logger.log(`[Stealth] Using IAAI special extraction for ${vin}`);
+    
+    const data = await page.evaluate((targetVin: string) => {
+      const bodyText = document.body.innerText || '';
+      const html = document.body.innerHTML || '';
+      
+      // VIN validation
+      const vinRegex = /\b([A-HJ-NPR-Z0-9]{17})\b/gi;
+      const vinMatches: string[] = bodyText.match(vinRegex) || [];
+      const foundVin = vinMatches.find((v: string) => v.toUpperCase() === targetVin.toUpperCase()) || null;
+      
+      if (!foundVin) return null;
+      
+      // Stock/Lot number - IAAI uses "Stock #"
+      let lotNumber: string | null = null;
+      const stockMatch = bodyText.match(/Stock\s*#?\s*:?\s*(\d{7,10})/i) ||
+                         bodyText.match(/Item\s*#?\s*:?\s*(\d+)/i) ||
+                         html.match(/data-stock[="](\d+)/i);
+      if (stockMatch) lotNumber = stockMatch[1];
+      
+      // Title/Vehicle Name
+      let title: string | null = null;
+      const h1 = document.querySelector('h1, .vehicle-title, [class*="title"]');
+      if (h1) {
+        title = h1.textContent?.trim() || null;
+      }
+      
+      // Parse year/make/model
+      let year: number | null = null;
+      let make: string | null = null;
+      let model: string | null = null;
+      
+      if (title) {
+        const titleMatch = title.match(/^(\d{4})\s+([A-Z][A-Z\-]+)\s+(.+)/i);
+        if (titleMatch) {
+          year = parseInt(titleMatch[1], 10);
+          make = titleMatch[2].toUpperCase();
+          model = titleMatch[3].trim();
+        }
+      }
+      
+      // Helper for IAAI label extraction
+      const findLabel = (labels: string[]): string | null => {
+        for (const label of labels) {
+          // IAAI uses table-like structure and spans
+          const patterns = [
+            new RegExp(label + '\\s*[:\\|]\\s*([^\\n\\|]+)', 'i'),
+            new RegExp('<span[^>]*>' + label + '<\\/span>\\s*<span[^>]*>([^<]+)', 'i'),
+            new RegExp('<td[^>]*>' + label + '<\\/td>\\s*<td[^>]*>([^<]+)', 'i'),
+          ];
+          for (const pattern of patterns) {
+            const match = bodyText.match(pattern) || html.match(pattern);
+            if (match && match[1]) {
+              const value = match[1].trim();
+              if (value && value.length < 100 && value !== '-') return value;
+            }
+          }
+        }
+        return null;
+      };
+      
+      // Current Bid/Price - IAAI specific
+      let price: number | null = null;
+      const priceText = findLabel(['Current Bid', 'Bid Amount', 'Buy Now Price', 'High Bid']);
+      if (priceText) {
+        const priceMatch = priceText.match(/\$?([\d,]+)/);
+        if (priceMatch) {
+          price = parseInt(priceMatch[1].replace(/,/g, ''), 10);
+        }
+      }
+      // Fallback
+      if (!price) {
+        const bigPrice = bodyText.match(/(?:Current Bid|Price)[:\s]*\$?\s*([\d,]+)/i);
+        if (bigPrice) {
+          const p = parseInt(bigPrice[1].replace(/,/g, ''), 10);
+          if (p > 100 && p < 500000) price = p;
+        }
+      }
+      
+      // Odometer - IAAI format
+      let mileage: number | null = null;
+      const odometerText = findLabel(['Odometer', 'Odometer Reading', 'Miles']);
+      if (odometerText) {
+        const odomMatch = odometerText.match(/([\d,]+)/);
+        if (odomMatch) {
+          mileage = parseInt(odomMatch[1].replace(/,/g, ''), 10);
+        }
+      }
+      
+      // Damage - IAAI specific labels
+      const primaryDamage = findLabel(['Primary Damage', 'Loss Type', 'Damage']);
+      const secondaryDamage = findLabel(['Secondary Damage', 'Minor Damage', 'Additional Damage']);
+      
+      // Title/Doc Type
+      const titleStatus = findLabel(['Title/Sale Doc', 'Sale Document', 'Title Type', 'Doc Type']);
+      
+      // Location/Branch
+      const location = findLabel(['Branch', 'Location', 'Branch Location', 'Yard']);
+      
+      // Sale Info
+      const saleDate = findLabel(['Sale Date', 'Auction Date', 'Sale']);
+      
+      // Vehicle Details
+      const fuel = findLabel(['Fuel Type', 'Fuel']);
+      const transmission = findLabel(['Transmission']);
+      const drive = findLabel(['Drive Line Type', 'Drive Type', 'Drive']);
+      const color = findLabel(['Color', 'Exterior Color']);
+      const engine = findLabel(['Engine', 'Engine Type', 'Cylinders']);
+      const bodyStyle = findLabel(['Body Style', 'Body']);
+      const keys = findLabel(['Keys', 'Keys Present', 'Key']);
+      const seller = findLabel(['Seller', 'Seller Type', 'Sold By']);
+      
+      // Loss Type (IAAI specific)
+      const lossType = findLabel(['Loss Type', 'Claim Type']);
+      
+      // Images - IAAI specific
+      const images: string[] = [];
+      document.querySelectorAll('img[src*="iaai"], img[src*="vehicleimage"], img[data-src*="iaai"]').forEach(img => {
+        const src = (img as HTMLImageElement).src || img.getAttribute('data-src') || '';
+        if (src && src.length > 30 && !src.includes('logo') && !src.includes('icon')) {
+          images.push(src);
+        }
+      });
+      // Check gallery/carousel
+      document.querySelectorAll('[class*="gallery"] img, [class*="slider"] img, .vehicle-image img').forEach(img => {
+        const src = (img as HTMLImageElement).src || img.getAttribute('data-src') || '';
+        if (src && src.length > 30 && !images.includes(src)) {
+          images.push(src);
+        }
+      });
+      
+      return {
+        foundVin,
+        lotNumber,
+        title,
+        year,
+        make,
+        model,
+        price,
+        mileage,
+        primaryDamage: primaryDamage || lossType,
+        secondaryDamage,
+        titleStatus,
+        location,
+        saleDate,
+        fuel,
+        transmission,
+        drive,
+        color,
+        engine,
+        bodyStyle,
+        keys,
+        seller,
+        images: images.slice(0, 20),
+      };
+    }, vin);
+    
+    if (!data || !data.foundVin) {
+      this.logger.warn(`[Stealth] IAAI: VIN not found on page`);
+      return null;
+    }
+    
+    const confidence = this.calculateConfidence(data, vin);
+    
+    this.logger.log(
+      `[Stealth] IAAI: stock=${data.lotNumber}, price=${data.price}, mileage=${data.mileage}, damage=${data.primaryDamage}, images=${data.images.length}`
+    );
+    
+    return {
+      vin: data.foundVin.toUpperCase(),
+      title: data.title || `${data.year || ''} ${data.make || ''} ${data.model || ''}`.trim() || undefined,
+      year: data.year || undefined,
+      make: data.make || undefined,
+      model: data.model || undefined,
+      lotNumber: data.lotNumber || undefined,
+      location: data.location || undefined,
+      price: data.price || undefined,
+      images: data.images || [],
+      damageType: data.primaryDamage || undefined,
+      secondaryDamage: data.secondaryDamage || undefined,
+      mileage: data.mileage || undefined,
+      odometerUnit: 'mi',
+      titleStatus: data.titleStatus || undefined,
+      fuel: data.fuel || undefined,
+      transmission: data.transmission || undefined,
+      drive: data.drive || undefined,
+      bodyStyle: data.bodyStyle || undefined,
+      seller: data.seller || undefined,
+      saleDate: data.saleDate ? new Date(data.saleDate) : undefined,
+      engine: data.engine || undefined,
+      color: data.color || undefined,
+      source: source.name,
+      sourceUrl: source.url,
+      sourceTier: source.tier,
+      confidence,
+      extractedAt: new Date(),
+      responseTime: 0,
+    };
+  }
+
+  /**
+   * Calculate confidence score based on extracted data
+   */
+  private calculateConfidence(data: any, targetVin: string): number {
+    let confidence = 0.4; // Base
+    
+    const normalizedTarget = targetVin.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '');
+    const normalizedFound = (data.foundVin || '').toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '');
+    
+    if (normalizedFound === normalizedTarget && normalizedFound.length === 17) {
+      confidence += 0.25; // VIN match
+    }
+    if (data.lotNumber) confidence += 0.1;
+    if (data.price && data.price > 0) confidence += 0.1;
+    if (data.mileage && data.mileage > 0) confidence += 0.05;
+    if (data.images && data.images.length > 0) confidence += 0.05;
+    if (data.year && data.make) confidence += 0.05;
+    
+    return Math.min(confidence, 1.0);
+  }
+
+  /**
    * Special extraction for stat.vin - they have excellent structured data
    */
   private async extractStatVinData(
@@ -626,6 +1058,16 @@ export class StealthAdapter implements OnModuleDestroy {
       return this.extractStatVinData(page, vin, source);
     }
     
+    // Special extraction for Copart
+    if (source.domain === 'copart.com') {
+      return this.extractCopartData(page, vin, source);
+    }
+    
+    // Special extraction for IAAI
+    if (source.domain === 'iaai.com') {
+      return this.extractIAAIData(page, vin, source);
+    }
+    
     const data = await page.evaluate((targetVin) => {
       const getText = (selector: string): string | null => {
         const el = document.querySelector(selector);
@@ -639,7 +1081,7 @@ export class StealthAdapter implements OnModuleDestroy {
       const vinRegex = /\b([A-HJ-NPR-Z0-9]{17})\b/gi;
       const vinMatches: string[] = bodyText.match(vinRegex) || [];
       // P0 FIX: Only accept EXACT VIN match - do NOT fallback to first VIN
-      const foundVin = vinMatches.find(v => v.toUpperCase() === targetVin.toUpperCase()) || null;
+      const foundVin = vinMatches.find((v: string) => v.toUpperCase() === targetVin.toUpperCase()) || null;
 
       // Extract year from text - ONLY from context near VIN
       // First, find all text blocks containing our VIN
