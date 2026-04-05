@@ -1,13 +1,13 @@
 """
 FastAPI proxy server that starts NestJS backend and proxies all requests.
-Version 2.0 - Improved cold start handling
+Version 3.0 - With BidMotors bulk scraper
 """
 import subprocess
 import os
 import sys
 import time
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import asyncio
@@ -16,6 +16,14 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BibiProxy")
+
+# Import bulk scraper
+from bulk_scraper import (
+    state as scraper_state,
+    run_bulk_scrape,
+    get_stats,
+    search_vehicles,
+)
 
 NESTJS_PORT = 8002  # Internal NestJS port
 STARTUP_TIMEOUT = 60  # seconds
@@ -96,6 +104,66 @@ async def lifespan(app: FastAPI):
             nestjs_process.wait()
 
 app = FastAPI(lifespan=lifespan, title="BIBI CRM Proxy")
+
+# ─── Bulk Scraper API ────────────────────────────────────────────────────
+
+@app.post("/api/bulk/start")
+async def bulk_start(
+    background_tasks: BackgroundTasks,
+    categories: str = Query(default=None, description="Comma-separated: new,middle,old,in-stock"),
+    max_sitemaps: int = Query(default=0, description="Limit sitemaps (0=all)"),
+):
+    """Start bulk scraping of bidmotors.bg sitemaps."""
+    if scraper_state.running:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Scraper already running", "status": scraper_state.to_dict()},
+        )
+    cat_list = [c.strip() for c in categories.split(",")] if categories else None
+    background_tasks.add_task(run_bulk_scrape, cat_list, max_sitemaps)
+    return {"message": "Bulk scrape started", "categories": cat_list, "max_sitemaps": max_sitemaps}
+
+
+@app.get("/api/bulk/status")
+async def bulk_status():
+    """Get current scraper status."""
+    return scraper_state.to_dict()
+
+
+@app.get("/api/bulk/stats")
+async def bulk_stats():
+    """Get database statistics for scraped vehicles."""
+    return get_stats()
+
+
+@app.get("/api/bulk/vehicles")
+async def bulk_vehicles(
+    make: str = Query(default=None),
+    model: str = Query(default=None),
+    year: int = Query(default=None),
+    vin: str = Query(default=None),
+    category: str = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """Search scraped vehicles."""
+    return search_vehicles(
+        make=make, model=model, year=year, vin=vin,
+        category=category, page=page, limit=limit,
+    )
+
+
+@app.post("/api/bulk/stop")
+async def bulk_stop():
+    """Stop the scraper (sets flag, completes current batch)."""
+    if not scraper_state.running:
+        return {"message": "Scraper is not running"}
+    scraper_state.phase = "stopping"
+    scraper_state.running = False
+    return {"message": "Stop signal sent"}
+
+
+# ─── NestJS Proxy (catch-all) ────────────────────────────────────────────
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy(request: Request, path: str):
