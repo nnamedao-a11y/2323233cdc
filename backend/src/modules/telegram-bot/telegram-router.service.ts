@@ -392,7 +392,7 @@ export class TelegramRouterService {
   // ============ CALCULATOR ============
   async handleCalculator(chatId: string, telegramId: string, messageId?: number): Promise<void> {
     const lang = await this.linkService.getLanguage(telegramId);
-    const siteUrl = process.env.PUBLIC_SITE_URL || 'https://vin-core-layer.preview.emergentagent.com';
+    const siteUrl = process.env.PUBLIC_SITE_URL || 'https://competitor-inventory.preview.emergentagent.com';
     
     const text = [
       `💰 ${t(lang, 'calculator')}`,

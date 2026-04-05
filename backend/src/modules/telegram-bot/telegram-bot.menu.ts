@@ -6,7 +6,7 @@
 
 import { t, Language } from './telegram-bot.i18n';
 
-const SITE_URL = process.env.PUBLIC_SITE_URL || 'https://vin-core-layer.preview.emergentagent.com';
+const SITE_URL = process.env.PUBLIC_SITE_URL || 'https://competitor-inventory.preview.emergentagent.com';
 
 export function mainMenu(lang: Language) {
   return {

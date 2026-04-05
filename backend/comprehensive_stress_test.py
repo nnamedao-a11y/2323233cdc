@@ -35,7 +35,7 @@ from collections import defaultdict
 import statistics
 
 # Configuration
-BASE_URL = "https://vin-core-layer.preview.emergentagent.com/api"
+BASE_URL = "https://competitor-inventory.preview.emergentagent.com/api"
 CONCURRENT_MANAGERS = 50  # Start with 50, can scale up
 CONCURRENT_TEAM_LEADS = 4
 TOTAL_REQUESTS_PER_MODULE = 100

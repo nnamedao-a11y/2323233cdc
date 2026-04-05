@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 class VINParserAPITester:
-    def __init__(self, base_url="https://328965f5-874d-425d-a283-16d858730ef3.preview.emergentagent.com"):
+    def __init__(self, base_url="https://competitor-inventory.preview.emergentagent.com"):
         self.base_url = base_url
         self.token = None
         self.tests_run = 0

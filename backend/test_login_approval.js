@@ -4,7 +4,7 @@ async function testLoginApproval() {
   try {
     // First get a token
     console.log('Getting admin token...');
-    const loginResponse = await axios.post('https://vin-core-layer.preview.emergentagent.com/api/auth/login', {
+    const loginResponse = await axios.post('https://competitor-inventory.preview.emergentagent.com/api/auth/login', {
       email: 'admin@crm.com',
       password: 'admin123'
     });
@@ -15,7 +15,7 @@ async function testLoginApproval() {
     // Test the endpoint with detailed error logging
     console.log('Testing login approval request...');
     try {
-      const response = await axios.post('https://vin-core-layer.preview.emergentagent.com/api/login-approval/request', {
+      const response = await axios.post('https://competitor-inventory.preview.emergentagent.com/api/login-approval/request', {
         userId: 'test_user_123',
         userName: 'Test User',
         userEmail: 'test@example.com'

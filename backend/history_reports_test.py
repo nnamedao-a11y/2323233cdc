@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 class HistoryReportsAPITester:
-    def __init__(self, base_url="https://vin-core-layer.preview.emergentagent.com"):
+    def __init__(self, base_url="https://competitor-inventory.preview.emergentagent.com"):
         self.base_url = base_url
         self.admin_token = None
         self.manager_token = None

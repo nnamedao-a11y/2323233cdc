@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 class RealtimeNotificationsTester:
-    def __init__(self, base_url="https://vin-core-layer.preview.emergentagent.com"):
+    def __init__(self, base_url="https://competitor-inventory.preview.emergentagent.com"):
         self.base_url = base_url
         self.token = None
         self.tests_run = 0

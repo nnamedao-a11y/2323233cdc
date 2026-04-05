@@ -32,7 +32,7 @@ from collections import defaultdict
 import statistics
 
 # Configuration
-BASE_URL = "https://vin-core-layer.preview.emergentagent.com/api"
+BASE_URL = "https://competitor-inventory.preview.emergentagent.com/api"
 REQUEST_TIMEOUT = 60
 
 # Scale parameters (20x more than previous)
